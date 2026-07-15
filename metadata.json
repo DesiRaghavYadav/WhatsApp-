@@ -1,0 +1,6 @@
+{
+  "name": "WhatsApp Web Dashboard",
+  "description": "A full-stack WhatsApp bridge and messaging dashboard powered by @queenanya/baileys and Express.js.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

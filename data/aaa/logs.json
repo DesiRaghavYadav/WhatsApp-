@@ -1,0 +1,602 @@
+[
+  {
+    "id": "ctsiap",
+    "timestamp": "2026-07-14T15:26:10.579Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "bticc5",
+    "timestamp": "2026-07-14T15:26:30.592Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "xxqrw",
+    "timestamp": "2026-07-14T15:26:50.605Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "5wme2q",
+    "timestamp": "2026-07-14T15:27:10.922Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "ct0o1",
+    "timestamp": "2026-07-14T15:27:15.933Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "c3wfta",
+    "timestamp": "2026-07-14T15:27:16.742Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "ngrp5h",
+    "timestamp": "2026-07-14T15:28:16.752Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "orxgb",
+    "timestamp": "2026-07-14T15:28:36.765Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "r4vynt",
+    "timestamp": "2026-07-14T15:28:56.775Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "myuiy",
+    "timestamp": "2026-07-14T15:29:16.785Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "47u5k",
+    "timestamp": "2026-07-14T15:29:36.795Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "fp7o",
+    "timestamp": "2026-07-14T15:29:57.137Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "5lm2sh",
+    "timestamp": "2026-07-14T15:30:02.151Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "6v58fyb",
+    "timestamp": "2026-07-14T15:30:02.893Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "cso8yt",
+    "timestamp": "2026-07-14T15:31:02.905Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "wn36dh",
+    "timestamp": "2026-07-14T15:31:22.915Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "i6t3n",
+    "timestamp": "2026-07-14T15:31:42.927Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "a6wgti",
+    "timestamp": "2026-07-14T15:32:02.936Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "lvkg35",
+    "timestamp": "2026-07-14T15:32:22.946Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "eqt2ui",
+    "timestamp": "2026-07-14T15:32:43.273Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "lzc2qa",
+    "timestamp": "2026-07-14T15:32:48.289Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "cld84p",
+    "timestamp": "2026-07-14T15:32:49.073Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "8uok7",
+    "timestamp": "2026-07-14T15:33:49.086Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "o8fgxr",
+    "timestamp": "2026-07-14T15:34:09.097Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "3rerrb",
+    "timestamp": "2026-07-14T15:34:29.108Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "099v5",
+    "timestamp": "2026-07-14T15:34:49.118Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "hz3x3",
+    "timestamp": "2026-07-14T15:35:09.142Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "mz9wgn",
+    "timestamp": "2026-07-14T15:35:29.462Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "h9xdla",
+    "timestamp": "2026-07-14T15:35:34.475Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "h5vz3s",
+    "timestamp": "2026-07-14T15:35:35.478Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "vfkpns",
+    "timestamp": "2026-07-14T15:36:35.497Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "kf6cc",
+    "timestamp": "2026-07-14T15:36:55.504Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "1ynrcc",
+    "timestamp": "2026-07-14T15:37:15.514Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "vip26i",
+    "timestamp": "2026-07-14T15:37:35.524Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "2omw8q",
+    "timestamp": "2026-07-14T15:37:55.533Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "wwkjem",
+    "timestamp": "2026-07-14T15:38:15.921Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "lcp5c",
+    "timestamp": "2026-07-14T15:38:20.933Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "zejrge",
+    "timestamp": "2026-07-14T15:38:21.968Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "qo6apo",
+    "timestamp": "2026-07-14T15:39:21.978Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "obtpcl",
+    "timestamp": "2026-07-14T15:39:42.004Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "tyt0xo",
+    "timestamp": "2026-07-14T15:40:02.012Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "2uzzmn",
+    "timestamp": "2026-07-14T15:40:22.027Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "4mj2j",
+    "timestamp": "2026-07-14T15:40:42.039Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "jow3bn",
+    "timestamp": "2026-07-14T15:41:02.437Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "3a99ue",
+    "timestamp": "2026-07-14T15:41:07.451Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "56t0s6",
+    "timestamp": "2026-07-14T15:41:08.449Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "m6lunb",
+    "timestamp": "2026-07-14T15:42:08.461Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "4xwtxg",
+    "timestamp": "2026-07-14T15:42:28.472Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "aspvml",
+    "timestamp": "2026-07-14T15:42:48.492Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "s1kvc",
+    "timestamp": "2026-07-14T15:43:08.506Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "2bkq7s",
+    "timestamp": "2026-07-14T15:43:28.513Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "blugu",
+    "timestamp": "2026-07-14T15:43:48.894Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "sl2nyj",
+    "timestamp": "2026-07-14T15:43:53.909Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "58r6g5",
+    "timestamp": "2026-07-14T15:43:54.703Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "njzqyr",
+    "timestamp": "2026-07-14T15:44:54.713Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "kgas3de",
+    "timestamp": "2026-07-14T15:45:14.728Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "gs8ecb",
+    "timestamp": "2026-07-14T15:45:34.733Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "c2yamc",
+    "timestamp": "2026-07-14T15:45:54.745Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "x1dgn",
+    "timestamp": "2026-07-14T15:46:14.755Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "8lfkac",
+    "timestamp": "2026-07-14T15:46:35.089Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "uxvsc6",
+    "timestamp": "2026-07-14T15:46:40.103Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "r0in2e",
+    "timestamp": "2026-07-14T15:46:40.875Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "aomgrh",
+    "timestamp": "2026-07-14T15:47:40.885Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "833ou",
+    "timestamp": "2026-07-14T15:48:00.898Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "bk8fkd",
+    "timestamp": "2026-07-14T15:48:20.907Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "ntufg",
+    "timestamp": "2026-07-14T15:48:40.917Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "6q9x2",
+    "timestamp": "2026-07-14T15:49:00.932Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "oj7dl",
+    "timestamp": "2026-07-14T15:49:21.235Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "n4m8mg",
+    "timestamp": "2026-07-14T15:49:26.253Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "48nmlm",
+    "timestamp": "2026-07-14T15:49:27.216Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "l6jknt",
+    "timestamp": "2026-07-14T15:50:27.226Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "gg3xff",
+    "timestamp": "2026-07-14T15:50:47.236Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "yvsvmd",
+    "timestamp": "2026-07-14T15:51:07.248Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "435zwl",
+    "timestamp": "2026-07-14T15:51:27.262Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "0wswubm",
+    "timestamp": "2026-07-14T15:51:47.274Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "3569hs",
+    "timestamp": "2026-07-14T15:52:07.625Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "f3knjoj",
+    "timestamp": "2026-07-14T15:52:12.642Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "8q6rh",
+    "timestamp": "2026-07-14T15:52:13.655Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "yfqg5v",
+    "timestamp": "2026-07-14T15:53:13.674Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "mcphec",
+    "timestamp": "2026-07-14T15:53:33.684Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "e448uh",
+    "timestamp": "2026-07-14T15:53:53.692Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "miz24",
+    "timestamp": "2026-07-14T15:54:13.704Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "ekugbb",
+    "timestamp": "2026-07-14T15:54:33.713Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "9mcvvi",
+    "timestamp": "2026-07-14T15:54:54.112Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "e0pvh8p",
+    "timestamp": "2026-07-14T15:54:59.128Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "5gny0h",
+    "timestamp": "2026-07-14T15:54:59.968Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "n8iwb9",
+    "timestamp": "2026-07-14T15:55:59.980Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "q19259",
+    "timestamp": "2026-07-14T15:56:19.991Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "u5a3nm",
+    "timestamp": "2026-07-14T15:56:40.013Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "argq9h",
+    "timestamp": "2026-07-14T15:57:00.023Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "5m6fv5",
+    "timestamp": "2026-07-14T15:57:20.034Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "otblef",
+    "timestamp": "2026-07-14T15:57:40.354Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  },
+  {
+    "id": "s848p",
+    "timestamp": "2026-07-14T15:57:45.368Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "uqe91x",
+    "timestamp": "2026-07-14T15:57:46.356Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "5s4qm",
+    "timestamp": "2026-07-14T15:58:46.370Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "0s6kd",
+    "timestamp": "2026-07-14T15:59:06.382Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "paveo",
+    "timestamp": "2026-07-14T15:59:26.390Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "he5l2h",
+    "timestamp": "2026-07-14T15:59:46.405Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "6oevtg",
+    "timestamp": "2026-07-14T16:00:06.433Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "4vabqc",
+    "timestamp": "2026-07-14T16:00:26.832Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "type": "info"
+  }
+]

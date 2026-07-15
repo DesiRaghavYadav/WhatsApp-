@@ -1,0 +1,71 @@
+[
+  {
+    "recipient": "916307368118@s.whatsapp.net",
+    "recipientType": "individual",
+    "messageType": "template",
+    "message": "Hello",
+    "footer": "Sent via WhatsApp Bridge",
+    "attachmentType": "image",
+    "attachmentUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800",
+    "inlineAttachment": true,
+    "templateButtons": [
+      {
+        "type": "url",
+        "text": "Visit Website",
+        "url": "https://ai.studio/build"
+      },
+      {
+        "type": "url",
+        "text": "Call Hotline",
+        "phoneNumber": "+1234567890",
+        "url": "https:/www.ghhg.com"
+      },
+      {
+        "type": "quickReply",
+        "text": "Learn More",
+        "id": "learn-more-id"
+      }
+    ],
+    "sessionId": "primary",
+    "tagGroupMembers": false,
+    "id": "xbu8et",
+    "status": "sent",
+    "addedAt": "2026-07-14T15:05:09.900Z",
+    "sentAt": "2026-07-14T15:05:11.470Z"
+  },
+  {
+    "recipient": "916387311955@s.whatsapp.net",
+    "recipientType": "individual",
+    "messageType": "template",
+    "message": "Hello",
+    "footer": "Sent via WhatsApp Bridge",
+    "attachmentType": "image",
+    "attachmentUrl": "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800",
+    "inlineAttachment": true,
+    "templateButtons": [
+      {
+        "type": "url",
+        "text": "Visit Website",
+        "url": "https://ai.studio/build"
+      },
+      {
+        "type": "url",
+        "text": "Call Hotline",
+        "phoneNumber": "+1234567890",
+        "url": "https:/www.ghhg.com"
+      },
+      {
+        "type": "url",
+        "text": "Learn More",
+        "id": "learn-more-id",
+        "url": "https:/www.jhhh.jhh"
+      }
+    ],
+    "sessionId": "primary",
+    "tagGroupMembers": false,
+    "id": "i6xfl",
+    "status": "sent",
+    "addedAt": "2026-07-14T15:07:22.129Z",
+    "sentAt": "2026-07-14T15:07:23.066Z"
+  }
+]
