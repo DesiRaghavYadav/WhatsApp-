@@ -63,7 +63,8 @@ import {
   Play,
   Pause,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Search
 } from 'lucide-react';
 
 import {
@@ -321,6 +322,16 @@ export default function App() {
 
   // Saved groups state
   const [savedGroups, setSavedGroups] = useState<any[]>([]);
+  const [isSyncingGroups, setIsSyncingGroups] = useState<boolean>(false);
+  const [groupFilter, setGroupFilter] = useState<'all' | 'canSend' | 'onlyAdmin'>('all');
+  const [logFilterQuery, setLogFilterQuery] = useState<string>('');
+  const [autoScrollLogs, setAutoScrollLogs] = useState<boolean>(true);
+
+  // Group Member Extractor Modal State
+  const [showMembersExtractor, setShowMembersExtractor] = useState<boolean>(false);
+  const [extractorTarget, setExtractorTarget] = useState<'individual' | 'filtered' | 'all'>('all');
+  const [extractorGroupJid, setExtractorGroupJid] = useState<string>('');
+  const [isBulkSavingLeads, setIsBulkSavingLeads] = useState<boolean>(false);
 
   // Queue state
   const [queueItems, setQueueItems] = useState<any[]>([]);
@@ -430,6 +441,7 @@ export default function App() {
   const [isResetting, setIsResetting] = useState<boolean>(false);
   
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
 
   // Load Quick Templates from LocalStorage on mount
   useEffect(() => {
@@ -572,15 +584,13 @@ export default function App() {
       }
     };
 
-    if (!token) {
-      fetchResources();
-      const interval = setInterval(fetchResources, 5000);
-      return () => {
-        active = false;
-        clearInterval(interval);
-      };
-    }
-  }, [token]);
+    fetchResources();
+    const interval = setInterval(fetchResources, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   const saveWorkflows = async (updated: WorkflowRule[]) => {
     setIsSavingWorkflows(true);
@@ -1037,6 +1047,29 @@ export default function App() {
     }
   };
 
+  const handleSyncGroups = async () => {
+    setIsSyncingGroups(true);
+    setFeedback({ type: 'info', text: 'Initiating WhatsApp Group synchronization...' });
+    try {
+      const res = await fetchWithAuth('/api/groups/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionIds: selectedSessionIds })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setFeedback({ type: 'success', text: data.message || 'Successfully synchronized all joined groups!' });
+        fetchGroups();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to synchronize groups.' });
+      }
+    } catch (e) {
+      setFeedback({ type: 'error', text: 'Network error synchronizing groups.' });
+    } finally {
+      setIsSyncingGroups(false);
+    }
+  };
+
   // Queue actions
   const handleUpdateDelay = async (seconds: number) => {
     try {
@@ -1104,12 +1137,90 @@ export default function App() {
     return () => clearInterval(interval);
   }, [token, currentView]);
 
-  // Scroll to bottom of terminal when logs update
+  // Scroll to bottom of terminal when logs update (only if autoScrollLogs is enabled)
   useEffect(() => {
-    if (activeTab === 'logs') {
-      terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (activeTab === 'logs' && autoScrollLogs && terminalContainerRef.current) {
+      const container = terminalContainerRef.current;
+      container.scrollTop = container.scrollHeight;
     }
-  }, [logs, activeTab]);
+  }, [logs, activeTab, autoScrollLogs]);
+
+  const getExtractorContacts = () => {
+    let targetGroups: any[] = [];
+    if (extractorTarget === 'individual') {
+      targetGroups = savedGroups.filter(g => g.jid === extractorGroupJid);
+    } else if (extractorTarget === 'filtered') {
+      const filteredGroups = savedGroups.filter(g => {
+        if (groupFilter === 'canSend') {
+          return g.canUserSend !== false;
+        }
+        if (groupFilter === 'onlyAdmin') {
+          return g.isAdmin === true;
+        }
+        return true;
+      });
+      targetGroups = filteredGroups;
+    } else {
+      targetGroups = savedGroups;
+    }
+
+    const contactsMap = new Map<string, { phone: string; name: string; groupName: string }>();
+    targetGroups.forEach(g => {
+      if (Array.isArray(g.participants)) {
+        g.participants.forEach((pJid: string) => {
+          const phone = pJid.split('@')[0].split(':')[0];
+          if (phone && !contactsMap.has(phone)) {
+            contactsMap.set(phone, {
+              phone,
+              name: `Group Member (${phone})`,
+              groupName: g.name || 'Group'
+            });
+          }
+        });
+      }
+    });
+
+    return Array.from(contactsMap.values());
+  };
+
+  const handleBulkSaveLeads = async (contacts: any[]) => {
+    if (contacts.length === 0) return;
+    setIsBulkSavingLeads(true);
+    try {
+      const formattedContacts = contacts.map(c => ({
+        phone: c.phone,
+        name: c.name,
+        notes: `Extracted from Group "${c.groupName}"`,
+        sessionName: 'Extractor'
+      }));
+
+      const res = await fetchWithAuth('/api/leads/bulk-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contacts: formattedContacts })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setFeedback({ 
+            type: 'success', 
+            text: `Successfully imported ${data.addedCount} new group members to Leads Hub!` 
+          });
+          setShowMembersExtractor(false);
+        } else {
+          setFeedback({ type: 'error', text: data.error || 'Failed to import leads.' });
+        }
+      } else {
+        setFeedback({ type: 'error', text: 'Server error importing contacts.' });
+      }
+    } catch (err: any) {
+      console.error(err);
+      setFeedback({ type: 'error', text: 'Network error saving leads: ' + err.message });
+    } finally {
+      setIsBulkSavingLeads(false);
+    }
+  };
 
   const getCleanNumber = (num: string) => {
     return num.replace(/\D/g, '');
@@ -1713,6 +1824,46 @@ export default function App() {
 
         {/* Sidebar Footer details */}
         <div className="space-y-4 pt-6 border-t border-slate-850/60 mt-8">
+          {/* Host Server Resources Widget */}
+          {serverResources && (
+            <div className="bg-slate-950/30 border border-slate-850/50 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between font-bold text-slate-300">
+                <span className="flex items-center gap-1.5 text-[10px] tracking-wider uppercase">
+                  <Server className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Host Server Health</span>
+                </span>
+                <span className="flex items-center gap-1 text-[8px] text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded-full">
+                  <span className="w-1 h-1 bg-emerald-400 rounded-full animate-pulse" />
+                  Live
+                </span>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-1.5 text-[9px] text-slate-400">
+                <div className="bg-slate-950/50 p-1.5 rounded-lg border border-slate-850/40">
+                  <span className="text-[7.5px] text-slate-500 block mb-0.5">CPU CORES</span>
+                  <span className="font-bold text-slate-200 font-mono">{serverResources.cpuCount || 0} Cores</span>
+                </div>
+                <div className="bg-slate-950/50 p-1.5 rounded-lg border border-slate-850/40">
+                  <span className="text-[7.5px] text-slate-500 block mb-0.5">SERVER IP</span>
+                  <span className="font-bold text-emerald-400 font-mono truncate block" title={serverResources.serverIp}>{serverResources.serverIp || '127.0.0.1'}</span>
+                </div>
+              </div>
+              
+              <div className="space-y-1">
+                <div className="flex justify-between text-[8.5px]">
+                  <span className="text-slate-500">RAM Utilized</span>
+                  <span className="font-mono text-emerald-400 font-bold">{Math.round((serverResources.usedMem / (serverResources.totalMem || 1)) * 100) || 0}%</span>
+                </div>
+                <div className="w-full h-1 bg-slate-950 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-emerald-500 rounded-full transition-all duration-1000"
+                    style={{ width: `${Math.round((serverResources.usedMem / (serverResources.totalMem || 1)) * 100) || 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Current Connected Session / User Info */}
           <div className="bg-slate-950/40 border border-slate-850/60 rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between text-xs">
@@ -2146,160 +2297,305 @@ export default function App() {
               </div>
 
               <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                When "getid" or "id" is messaged in any group, details are automatically logged. Select or copy them below.
+                Manually logs when "getid" or "id" is sent in group chats. You can also synchronize all your joined groups live.
               </p>
+
+              {/* Sync Live Groups Block */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4 bg-slate-950/40 p-3 rounded-xl border border-slate-850">
+                <div className="text-xs text-slate-300">
+                  <strong className="text-indigo-400">Sync Live Groups:</strong> Fetch all groups from your connected WhatsApp account instantly with live send settings.
+                </div>
+                <button
+                  type="button"
+                  disabled={isSyncingGroups}
+                  onClick={handleSyncGroups}
+                  className="w-full sm:w-auto py-1.5 px-3 bg-indigo-500 hover:bg-indigo-400 disabled:bg-slate-800 text-slate-950 font-bold text-xs rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:text-slate-500"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGroups ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingGroups ? 'Syncing...' : 'Sync Active Groups'}</span>
+                </button>
+              </div>
 
               {savedGroups.length === 0 ? (
                 <div className="p-4 bg-slate-950/40 rounded-xl border border-slate-850/60 text-center text-slate-500 text-[11px] italic">
-                  No saved groups found. Send "getid" in any group chat to capture details.
+                  No saved groups found. Connect WhatsApp and click "Sync Active Groups" or send "getid" in a group.
                 </div>
               ) : (
-                <div className="space-y-3.5">
-                  {/* Select Group Dropdown */}
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">Insert JID into Recipient Field</label>
-                    <select
-                      onChange={(e) => {
-                        const jid = e.target.value;
-                        if (jid) {
-                          setPhoneNumber(jid);
-                          setRecipientType('group');
-                          const matched = savedGroups.find(g => g.jid === jid);
-                          if (matched && matched.sessionId) {
-                            if (!selectedSessionIds.includes(matched.sessionId)) {
-                              setSelectedSessionIds([...selectedSessionIds, matched.sessionId]);
-                            }
-                          }
-                        }
-                      }}
-                      className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-xs text-white outline-none cursor-pointer"
-                    >
-                      <option value="">-- Click to select and insert Group JID --</option>
-                      {savedGroups.map(g => (
-                        <option key={g.jid} value={g.jid}>
-                          {g.name || 'No Name'} ({g.jid.split('@')[0]}){g.sessionId ? ` [Owner: ${g.sessionId}]` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                (() => {
+                  const filteredGroups = savedGroups.filter(g => {
+                    if (groupFilter === 'canSend') {
+                      return g.canUserSend !== false;
+                    }
+                    if (groupFilter === 'onlyAdmin') {
+                      return g.isAdmin === true;
+                    }
+                    return true;
+                  });
 
-                  {/* Bulk Management: Select All Checkbox & Unselect All Button */}
-                  <div className="flex items-center justify-between p-2.5 bg-slate-950/40 border border-slate-850/60 rounded-xl">
-                    <div className="flex items-center gap-2">
-                      <input
-                        id="select-all-groups"
-                        type="checkbox"
-                        checked={savedGroups.length > 0 && savedGroups.every(g => phoneNumber.includes(g.jid))}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          if (checked) {
-                            setRecipientType('group');
-                            const separator = splitByCommas ? ', ' : '\n';
-                            const allJids = savedGroups.map(g => g.jid).join(separator);
-                            setPhoneNumber(allJids);
-                            
-                            // Ensure all owners of the saved groups are selected in session IDs
-                            const newSessionIds = [...selectedSessionIds];
-                            savedGroups.forEach(g => {
-                              if (g.sessionId && !newSessionIds.includes(g.sessionId)) {
-                                newSessionIds.push(g.sessionId);
-                              }
-                            });
-                            setSelectedSessionIds(newSessionIds);
-                            setFeedback({ type: 'success', text: `Selected all ${savedGroups.length} groups in recipient list!` });
-                          } else {
-                            setPhoneNumber('');
-                            setFeedback({ type: 'info', text: 'Cleared group selections.' });
-                          }
-                        }}
-                        className="rounded text-indigo-500 focus:ring-indigo-500 bg-slate-900 border-slate-800 cursor-pointer h-4 w-4"
-                      />
-                      <label htmlFor="select-all-groups" className="text-[11px] font-medium text-slate-300 cursor-pointer select-none">
-                        Select All ({savedGroups.length} Groups)
-                      </label>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPhoneNumber('');
-                        setFeedback({ type: 'info', text: 'Cleared recipient input field.' });
-                      }}
-                      className="py-1 px-2.5 bg-slate-900 hover:bg-slate-850 active:scale-[0.97] border border-slate-850 hover:border-slate-800 text-[10px] font-bold text-rose-400 hover:text-rose-350 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
-                    >
-                      <X className="w-3 h-3" />
-                      <span>Unselect All</span>
-                    </button>
-                  </div>
-
-                  {/* Copy Commands Grid */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const jids = savedGroups.map(g => g.jid).join(', ');
-                        navigator.clipboard.writeText(jids);
-                        setFeedback({ type: 'success', text: `Copied all ${savedGroups.length} group JIDs joined by commas!` });
-                      }}
-                      className="py-1.5 px-2 bg-slate-950 hover:bg-slate-850 border border-slate-850 text-[10px] font-bold text-indigo-400 hover:text-white rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Copy All (Commas)</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const jids = savedGroups.map(g => g.jid).join('\n');
-                        navigator.clipboard.writeText(jids);
-                        setFeedback({ type: 'success', text: `Copied all ${savedGroups.length} group JIDs on new lines!` });
-                      }}
-                      className="py-1.5 px-2 bg-slate-950 hover:bg-slate-850 border border-slate-850 text-[10px] font-bold text-indigo-400 hover:text-white rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                      <span>Copy All (Newlines)</span>
-                    </button>
-                  </div>
-
-                  {/* Scrollable Individual Groups List with Click to Copy and delete */}
-                  <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
-                    {savedGroups.map(g => (
-                      <div key={g.jid} className="p-2.5 bg-slate-950 border border-slate-850 hover:border-slate-800 rounded-lg flex items-center justify-between gap-2 text-left">
-                        <div className="min-w-0 flex-1">
-                          <span className="font-bold text-xs text-slate-300 block truncate">{g.name || 'Unnamed Group'}</span>
-                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                            <span className="font-mono text-[9.5px] text-slate-500 truncate select-all">{g.jid}</span>
-                            {g.sessionId && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 rounded font-mono font-bold shrink-0">
-                                📱 Owner: {g.sessionId}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              navigator.clipboard.writeText(g.jid);
-                              setFeedback({ type: 'success', text: `Group JID copied: ${g.jid}` });
-                            }}
-                            className="p-1 bg-slate-900 hover:bg-slate-850 text-indigo-400 hover:text-white rounded border border-slate-850 transition-colors cursor-pointer"
-                            title="Copy JID"
-                          >
-                            <Copy className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteGroup(g.jid)}
-                            className="p-1 bg-slate-900 hover:bg-slate-850 text-rose-500 hover:text-rose-400 rounded border border-slate-850 transition-colors cursor-pointer"
-                            title="Delete Metadata"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
+                  return (
+                    <div className="space-y-3.5">
+                      {/* Filter Controls */}
+                      <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-950/20 rounded-lg border border-slate-850/60">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-2 select-none shrink-0">Show:</span>
+                        <button
+                          type="button"
+                          onClick={() => setGroupFilter('all')}
+                          className={`px-2.5 py-1 rounded text-xs transition-all cursor-pointer ${
+                            groupFilter === 'all' 
+                              ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-bold' 
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          All ({savedGroups.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGroupFilter('canSend')}
+                          className={`px-2.5 py-1 rounded text-xs transition-all cursor-pointer flex items-center gap-1 ${
+                            groupFilter === 'canSend' 
+                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold' 
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                          title="Groups where everyone can send, or where you are an admin"
+                        >
+                          <span>✓ Allowed to Post</span>
+                          <span className="text-[10px] opacity-75">({savedGroups.filter(g => g.canUserSend !== false).length})</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setGroupFilter('onlyAdmin')}
+                          className={`px-2.5 py-1 rounded text-xs transition-all cursor-pointer flex items-center gap-1 ${
+                            groupFilter === 'onlyAdmin' 
+                              ? 'bg-teal-500/20 text-teal-300 border border-teal-500/30 font-bold' 
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          <span>⭐ You Are Admin</span>
+                          <span className="text-[10px] opacity-75">({savedGroups.filter(g => g.isAdmin === true).length})</span>
+                        </button>
                       </div>
-                    ))}
-                  </div>
-                </div>
+
+                      {/* Select Group Dropdown */}
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wide">Insert JID into Recipient Field</label>
+                        <select
+                          onChange={(e) => {
+                            const jid = e.target.value;
+                            if (jid) {
+                              setPhoneNumber(jid);
+                              setRecipientType('group');
+                              const matched = savedGroups.find(g => g.jid === jid);
+                              if (matched && matched.sessionId) {
+                                  if (!selectedSessionIds.includes(matched.sessionId)) {
+                                    setSelectedSessionIds([...selectedSessionIds, matched.sessionId]);
+                                  }
+                              }
+                            }
+                          }}
+                          className="w-full bg-slate-950 border border-slate-850 rounded-xl px-3 py-2 text-xs text-white outline-none cursor-pointer"
+                        >
+                          <option value="">-- Click to select and insert Group JID ({filteredGroups.length} visible) --</option>
+                          {filteredGroups.map(g => {
+                            let suffix = '';
+                            if (g.isAdmin) suffix += ' [Admin ⭐]';
+                            if (g.canUserSend === false) suffix += ' [Locked 🔒]';
+                            return (
+                              <option key={g.jid} value={g.jid}>
+                                {g.name || 'No Name'} ({g.jid.split('@')[0]}){suffix}{g.sessionId ? ` [Owner: ${g.sessionId}]` : ''}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      {/* Bulk Management: Select All Checkbox & Unselect All Button */}
+                      <div className="flex items-center justify-between p-2.5 bg-slate-950/40 border border-slate-850/60 rounded-xl">
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="select-all-groups"
+                            type="checkbox"
+                            checked={filteredGroups.length > 0 && filteredGroups.every(g => phoneNumber.includes(g.jid))}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              if (checked) {
+                                setRecipientType('group');
+                                const separator = splitByCommas ? ', ' : '\n';
+                                const allJids = filteredGroups.map(g => g.jid).join(separator);
+                                setPhoneNumber(allJids);
+                                
+                                // Ensure all owners of the saved groups are selected in session IDs
+                                const newSessionIds = [...selectedSessionIds];
+                                filteredGroups.forEach(g => {
+                                  if (g.sessionId && !newSessionIds.includes(g.sessionId)) {
+                                    newSessionIds.push(g.sessionId);
+                                  }
+                                });
+                                setSelectedSessionIds(newSessionIds);
+                                setFeedback({ type: 'success', text: `Selected all ${filteredGroups.length} filtered groups in recipient list!` });
+                              } else {
+                                setPhoneNumber('');
+                                setFeedback({ type: 'info', text: 'Cleared group selections.' });
+                              }
+                            }}
+                            className="rounded text-indigo-500 focus:ring-indigo-500 bg-slate-900 border-slate-800 cursor-pointer h-4 w-4"
+                          />
+                          <label htmlFor="select-all-groups" className="text-[11px] font-medium text-slate-300 cursor-pointer select-none">
+                            Select All ({filteredGroups.length} Groups)
+                          </label>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhoneNumber('');
+                            setFeedback({ type: 'info', text: 'Cleared recipient input field.' });
+                          }}
+                          className="py-1 px-2.5 bg-slate-900 hover:bg-slate-850 active:scale-[0.97] border border-slate-850 hover:border-slate-800 text-[10px] font-bold text-rose-400 hover:text-rose-350 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                          <span>Unselect All</span>
+                        </button>
+                      </div>
+
+                      {/* Rich Action Controls Grid */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-950/20 p-2.5 rounded-xl border border-slate-850">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const jids = filteredGroups.map(g => g.jid).join(', ');
+                            navigator.clipboard.writeText(jids);
+                            setFeedback({ type: 'success', text: `Copied all ${filteredGroups.length} filtered group JIDs joined by commas!` });
+                          }}
+                          className="py-2 px-2 bg-slate-950 hover:bg-slate-850 border border-slate-850 hover:border-slate-800 text-[10px] font-bold text-indigo-400 hover:text-white rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          title="Copy visible group JIDs with comma separation"
+                        >
+                          <Copy className="w-3.5 h-3.5 shrink-0" />
+                          <span>Copy JIDs (,)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const jids = filteredGroups.map(g => g.jid).join('\n');
+                            navigator.clipboard.writeText(jids);
+                            setFeedback({ type: 'success', text: `Copied all ${filteredGroups.length} filtered group JIDs on new lines!` });
+                          }}
+                          className="py-2 px-2 bg-slate-950 hover:bg-slate-850 border border-slate-850 hover:border-slate-800 text-[10px] font-bold text-indigo-400 hover:text-white rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          title="Copy visible group JIDs with newline separation"
+                        >
+                          <Copy className="w-3.5 h-3.5 shrink-0" />
+                          <span>Copy JIDs (\n)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExtractorTarget('filtered');
+                            setShowMembersExtractor(true);
+                          }}
+                          className="py-2 px-2 bg-indigo-950/40 hover:bg-indigo-500/20 border border-indigo-500/25 hover:border-indigo-500/40 text-[10px] font-bold text-indigo-300 hover:text-white rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          title="Extract and save phone numbers from currently filtered groups"
+                        >
+                          <Users className="w-3.5 h-3.5 shrink-0 animate-pulse text-indigo-400" />
+                          <span>Scrape Filtered ({filteredGroups.length})</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExtractorTarget('all');
+                            setShowMembersExtractor(true);
+                          }}
+                          className="py-2 px-2 bg-emerald-950/40 hover:bg-emerald-500/20 border border-emerald-500/25 hover:border-emerald-500/40 text-[10px] font-bold text-emerald-300 hover:text-white rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          title="Extract and save phone numbers from all saved groups"
+                        >
+                          <Users className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                          <span>Scrape All ({savedGroups.length})</span>
+                        </button>
+                      </div>
+
+                      {/* Scrollable Individual Groups List */}
+                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                        {filteredGroups.length === 0 ? (
+                          <div className="p-4 bg-slate-950/20 text-center text-slate-500 text-[11px] rounded-lg border border-slate-850/40">
+                            No groups match this filter.
+                          </div>
+                        ) : (
+                          filteredGroups.map(g => (
+                            <div key={g.jid} className="p-2.5 bg-slate-950 border border-slate-850 hover:border-slate-800 rounded-lg flex items-center justify-between gap-2 text-left">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center flex-wrap gap-1.5">
+                                  <span className="font-bold text-xs text-slate-300 truncate">{g.name || 'Unnamed Group'}</span>
+                                  {g.isAdmin && (
+                                    <span className="text-[8.5px] font-extrabold px-1.5 py-0.5 bg-teal-500/10 text-teal-400 border border-teal-500/20 rounded">
+                                      ⭐ Admin
+                                    </span>
+                                  )}
+                                  {g.canUserSend === false ? (
+                                    <span className="text-[8.5px] font-extrabold px-1.5 py-0.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded">
+                                      🔒 Locked
+                                    </span>
+                                  ) : g.onlyAdminsCanSend ? (
+                                    <span className="text-[8.5px] font-extrabold px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">
+                                      ✓ Postable (Admin)
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8.5px] font-semibold px-1.5 py-0.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded">
+                                      ✓ Everyone can Post
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                  <span className="font-mono text-[9.5px] text-slate-500 truncate select-all">{g.jid}</span>
+                                  {g.sessionId && (
+                                    <span className="text-[9px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-400 border border-indigo-500/20 rounded font-mono font-bold shrink-0">
+                                      📱 Session: {g.sessionId}
+                                    </span>
+                                  )}
+                                  {g.memberCount > 0 && (
+                                    <span className="text-[9px] px-1.5 py-0.5 bg-slate-850 text-slate-400 border border-slate-800 rounded font-mono shrink-0">
+                                      👥 {g.memberCount} members
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setExtractorTarget('individual');
+                                    setExtractorGroupJid(g.jid);
+                                    setShowMembersExtractor(true);
+                                  }}
+                                  className="p-1 bg-indigo-950/40 hover:bg-indigo-500/20 text-indigo-400 hover:text-white rounded border border-indigo-500/20 hover:border-indigo-500/40 transition-colors cursor-pointer"
+                                  title="👥 Extract & Save Member Numbers"
+                                >
+                                  <Users className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(g.jid);
+                                    setFeedback({ type: 'success', text: `Group JID copied: ${g.jid}` });
+                                  }}
+                                  className="p-1 bg-slate-900 hover:bg-slate-850 text-indigo-400 hover:text-white rounded border border-slate-850 transition-colors cursor-pointer"
+                                  title="Copy JID"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteGroup(g.jid)}
+                                  className="p-1 bg-slate-900 hover:bg-slate-850 text-rose-500 hover:text-rose-400 rounded border border-slate-850 transition-colors cursor-pointer"
+                                  title="Delete Metadata"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()
               )}
             </div>
 
@@ -2341,7 +2637,7 @@ export default function App() {
                     className="w-full accent-teal-500 bg-slate-900 h-1.5 rounded-lg cursor-pointer"
                   />
                   <span className="text-[9px] text-slate-500 block leading-tight">
-                    Higher wait intervals reduce block rates when broadcasting large volume templates.
+                    Higher wait intervals reduce block rates. Includes an automated <span className="text-teal-400 font-semibold">±5–10s randomized human-like variation</span> on each dispatch for enhanced ban protection.
                   </span>
                 </div>
 
@@ -3465,38 +3761,135 @@ export default function App() {
 
               {/* Logs Tab */}
               {activeTab === 'logs' && (
-                <div id="panel-logs" className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-slate-400">Live connection and socket telemetry streams</p>
-                    <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 bg-emerald-400 rounded-full animate-ping" />
-                      <span className="text-[10px] font-mono text-emerald-400">SOCKET MONITOR</span>
-                    </div>
+                <div id="panel-logs" className="space-y-3">
+                  {/* Search / Filter Input */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-slate-500" />
+                    <input
+                      type="text"
+                      placeholder="Search / filter logs by keyword or JID..."
+                      value={logFilterQuery}
+                      onChange={(e) => setLogFilterQuery(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 focus:border-indigo-500/50 rounded-xl pl-9 pr-4 py-2 text-xs text-white outline-none placeholder-slate-500 transition-colors"
+                    />
+                    {logFilterQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setLogFilterQuery('')}
+                        className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 text-xs font-bold font-mono cursor-pointer"
+                      >
+                        × Clear Filter
+                      </button>
+                    )}
                   </div>
 
-                  <div className="bg-slate-950 border border-slate-850 rounded-xl p-4 font-mono text-xs text-slate-300 h-64 overflow-y-auto space-y-2 select-text">
-                    {logs.length === 0 ? (
-                      <p className="text-slate-600 italic">Telemetry idle. No connection events generated.</p>
-                    ) : (
-                      logs.map((log) => (
-                        <div key={log.id} className="flex items-start gap-2 leading-relaxed">
-                          <span className="text-slate-600 shrink-0 select-none">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-                          <span className={`shrink-0 select-none px-1.5 py-0.2 text-[10px] font-bold rounded uppercase ${
+                  {/* Telemetry Console */}
+                  <div 
+                    ref={terminalContainerRef}
+                    onScroll={(e) => {
+                      const target = e.currentTarget;
+                      const isAtBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 40;
+                      if (isAtBottom) {
+                        setAutoScrollLogs(true);
+                      } else {
+                        setAutoScrollLogs(false);
+                      }
+                    }}
+                    className="bg-slate-950 border border-slate-850 rounded-xl p-4 font-mono text-xs text-slate-300 h-[380px] overflow-y-auto space-y-1.5 select-text scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-slate-950"
+                  >
+                    {(() => {
+                      const queryClean = logFilterQuery.trim().toLowerCase();
+                      const filteredLogs = logs.filter(log => 
+                        !queryClean || 
+                        log.message.toLowerCase().includes(queryClean) || 
+                        log.type.toLowerCase().includes(queryClean)
+                      );
+
+                      if (filteredLogs.length === 0) {
+                        return (
+                          <div className="text-slate-600 italic py-8 text-center">
+                            {logs.length === 0 
+                              ? "Telemetry idle. No connection events generated." 
+                              : "No logs matching current filter."}
+                          </div>
+                        );
+                      }
+
+                      return filteredLogs.map((log) => (
+                        <div key={log.id} className="flex items-start gap-2 leading-relaxed border-b border-slate-900/40 pb-1 last:border-b-0">
+                          <span className="text-slate-600 shrink-0 select-none font-mono text-[11px]">
+                            [{new Date(log.timestamp).toLocaleTimeString()}]
+                          </span>
+                          <span className={`shrink-0 select-none px-1.5 py-0.2 text-[9px] font-bold rounded uppercase ${
                             log.type === 'success' 
-                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/10' 
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
                               : log.type === 'error'
-                                ? 'bg-rose-500/15 text-rose-400 border border-rose-500/10'
-                                : 'bg-slate-800 text-slate-400'
+                                ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                : 'bg-slate-850 text-slate-400 border border-slate-800'
                           }`}>
                             {log.type}
                           </span>
-                          <span className={log.type === 'error' ? 'text-rose-300' : log.type === 'success' ? 'text-emerald-300' : 'text-slate-300'}>
+                          <span className={`font-mono text-[11px] ${
+                            log.type === 'error' 
+                              ? 'text-rose-300/90 font-medium' 
+                              : log.type === 'success' 
+                                ? 'text-emerald-300/90' 
+                                : 'text-slate-300'
+                          }`}>
                             {log.message}
                           </span>
                         </div>
-                      ))
-                    )}
+                      ));
+                    })()}
                     <div ref={terminalEndRef} />
+                  </div>
+
+                  {/* Actions / Status Bar below telemetry */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-900/30 p-2.5 rounded-xl border border-slate-850">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 bg-emerald-400 rounded-full animate-ping shrink-0" />
+                      <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">SOCKET MONITOR</span>
+                      <p className="text-[11px] text-slate-400 hidden sm:inline">— Socket telemetry streams</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Autoscroll toggle */}
+                      <button
+                        type="button"
+                        onClick={() => setAutoScrollLogs(!autoScrollLogs)}
+                        className={`px-2.5 py-1 rounded text-[10px] font-bold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                          autoScrollLogs 
+                            ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20 hover:bg-indigo-500/20' 
+                            : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-300'
+                        }`}
+                        title={autoScrollLogs ? "Autoscroll is Active. Click to pause." : "Autoscroll is Paused. Click to enable."}
+                      >
+                        <span className={`w-1.5 h-1.5 rounded-full ${autoScrollLogs ? 'bg-indigo-400 animate-pulse' : 'bg-slate-600'}`} />
+                        <span>{autoScrollLogs ? 'Autoscroll On' : 'Autoscroll Paused'}</span>
+                      </button>
+
+                      {/* Manual scroll to bottom */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAutoScrollLogs(true);
+                          if (terminalContainerRef.current) {
+                            terminalContainerRef.current.scrollTop = terminalContainerRef.current.scrollHeight;
+                          }
+                        }}
+                        className="px-2.5 py-1 bg-slate-950 hover:bg-slate-850 text-slate-300 hover:text-white rounded text-[10px] font-bold border border-slate-850 cursor-pointer"
+                      >
+                        ↓ Scroll to Bottom
+                      </button>
+
+                      {/* Clear Logs */}
+                      <button
+                        type="button"
+                        onClick={() => setLogs([])}
+                        className="px-2.5 py-1 bg-rose-950/20 hover:bg-rose-950/40 text-rose-400 hover:text-rose-300 rounded text-[10px] font-bold border border-rose-950/30 cursor-pointer"
+                      >
+                        Clear Visual Logs
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -3762,6 +4155,107 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* Host Server Resources Detail Panel */}
+            {serverResources && (
+              <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden mt-6">
+                <div className="absolute top-0 left-0 w-1.5 h-full bg-emerald-500" />
+                
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 border-b border-slate-850 pb-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider">
+                      <Server className="w-4 h-4 text-emerald-400" />
+                      <span>Host Server System Resources & Diagnostics</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Real-time physical server resource usage, hardware profiles, network throughput, and process metrics.
+                    </p>
+                  </div>
+                  <span className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-400 font-bold bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-full shrink-0 self-start sm:self-center">
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
+                    Monitoring Live
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {/* CPU Metric */}
+                  <div className="bg-slate-950 border border-slate-850/80 rounded-xl p-4 space-y-2">
+                    <span className="text-[10px] text-slate-500 block font-bold uppercase tracking-wider">Processor Core Profile</span>
+                    <span className="text-xl font-bold text-white font-mono block">
+                      {serverResources.cpuCount || 0} <span className="text-xs text-slate-400 font-normal">Logical Cores</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-mono block truncate" title={serverResources.cpuModel}>
+                      {serverResources.cpuModel || 'Intel/AMD Host Processor'}
+                    </span>
+                    <div className="pt-1.5 text-[9px] text-slate-500 font-mono">
+                      Platform Architecture: <span className="text-emerald-400">{serverResources.platform || 'Linux'}</span>
+                    </div>
+                  </div>
+
+                  {/* RAM Metric */}
+                  <div className="bg-slate-950 border border-slate-850/80 rounded-xl p-4 space-y-3">
+                    <div className="flex justify-between items-start">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">RAM Usage State</span>
+                      <span className="text-[9px] font-mono text-emerald-400 font-bold">{Math.round((serverResources.usedMem / (serverResources.totalMem || 1)) * 100) || 0}%</span>
+                    </div>
+                    <div>
+                      <span className="text-sm font-bold text-white font-mono block">
+                        {(serverResources.usedMem / (1024 * 1024 * 1024)).toFixed(2)} GB <span className="text-[10px] text-slate-400 font-normal">Used</span>
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                        Allocated: {(serverResources.totalMem / (1024 * 1024 * 1024)).toFixed(1)} GB Total
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-emerald-500 rounded-full transition-all duration-1000"
+                        style={{ width: `${Math.round((serverResources.usedMem / (serverResources.totalMem || 1)) * 100) || 0}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* SSD Storage Metric */}
+                  <div className="bg-slate-950 border border-slate-850/80 rounded-xl p-4 space-y-3">
+                    <div className="flex justify-between items-start">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">SSD Persistent Space</span>
+                      <span className="text-[9px] font-mono text-blue-400 font-bold">{Math.round((serverResources.diskUsed / (serverResources.diskTotal || 1)) * 100) || 0}%</span>
+                    </div>
+                    <div>
+                      <span className="text-sm font-bold text-white font-mono block">
+                        {(serverResources.diskUsed / (1024 * 1024 * 1024)).toFixed(1)} GB <span className="text-[10px] text-slate-400 font-normal">Used</span>
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                        Free Space: {(serverResources.diskFree / (1024 * 1024 * 1024)).toFixed(1)} GB
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-900 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-blue-500 rounded-full transition-all duration-1000"
+                        style={{ width: `${Math.round((serverResources.diskUsed / (serverResources.diskTotal || 1)) * 100) || 0}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Network Telemetry Metric */}
+                  <div className="bg-slate-950 border border-slate-850/80 rounded-xl p-4 space-y-2">
+                    <span className="text-[10px] text-slate-500 block font-bold uppercase tracking-wider">Gateway Network Speed</span>
+                    <span className="text-xl font-bold text-white font-mono block">
+                      ~{serverResources.internetSpeed || 1000} <span className="text-xs text-slate-400 font-normal">Mbps</span>
+                    </span>
+                    <div className="pt-1 text-[9px] text-slate-500 space-y-1">
+                      <div className="flex justify-between">
+                        <span>Latency Ping (Google):</span>
+                        <span className="text-emerald-400 font-bold font-mono">{serverResources.internetPing || 12} ms</span>
+                      </div>
+                      <div className="flex justify-between border-t border-slate-850/60 pt-1">
+                        <span>Private Host IP:</span>
+                        <span className="text-slate-300 font-mono truncate max-w-[100px]">{serverResources.serverIp || '127.0.0.1'}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-8 animate-fadeIn">
@@ -4619,6 +5113,158 @@ export default function App() {
                   </button>
                 </div>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Group Member Extractor and Save Modal */}
+      <AnimatePresence>
+        {showMembersExtractor && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-4 md:p-8 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]"
+            >
+              {/* Modal Header */}
+              <div className="p-6 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center">
+                    <Users className="w-5 h-5 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider">Group Member Extractor</h3>
+                    <p className="text-[11px] text-slate-400">
+                      Target: {extractorTarget === 'individual' ? `Individual Group (${extractorGroupJid})` : extractorTarget === 'filtered' ? `Filtered Groups` : 'All Joined Groups'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMembersExtractor(false)}
+                  className="p-1.5 hover:bg-slate-850 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Modal Content */}
+              {(() => {
+                const contacts = getExtractorContacts();
+                
+                return (
+                  <>
+                    <div className="p-6 flex-1 overflow-y-auto space-y-4">
+                      {/* Summary Banner */}
+                      <div className="p-4 bg-slate-950 border border-slate-850 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-0.5">Total Unique Numbers Found</span>
+                          <span className="text-2xl font-black text-indigo-400 font-mono">{contacts.length}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = contacts.map(c => c.phone).join(', ');
+                              navigator.clipboard.writeText(list);
+                              setFeedback({ type: 'success', text: `Copied ${contacts.length} numbers separated by commas!` });
+                            }}
+                            className="flex-1 sm:flex-none py-1.5 px-3 bg-slate-950 hover:bg-slate-850 text-indigo-400 border border-slate-800 rounded-lg text-xs font-bold transition-all cursor-pointer text-center"
+                          >
+                            Copy (Commas)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = contacts.map(c => c.phone).join('\n');
+                              navigator.clipboard.writeText(list);
+                              setFeedback({ type: 'success', text: `Copied ${contacts.length} numbers on separate lines!` });
+                            }}
+                            className="flex-1 sm:flex-none py-1.5 px-3 bg-slate-950 hover:bg-slate-850 text-indigo-400 border border-slate-800 rounded-lg text-xs font-bold transition-all cursor-pointer text-center"
+                          >
+                            Copy (Newlines)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const list = contacts.map(c => c.phone).join('\n');
+                              const blob = new Blob([list], { type: 'text/plain;charset=utf-8' });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = `extracted_whatsapp_members_${Date.now()}.txt`;
+                              a.click();
+                              URL.revokeObjectURL(url);
+                              setFeedback({ type: 'success', text: `Downloaded .TXT list of ${contacts.length} numbers!` });
+                            }}
+                            className="flex-1 sm:flex-none py-1.5 px-3 bg-slate-950 hover:bg-slate-850 text-indigo-400 border border-slate-800 rounded-lg text-xs font-bold transition-all cursor-pointer text-center"
+                          >
+                            Download .TXT
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Info alert */}
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        Below is a clean deduplicated preview of the phone numbers found in the chosen scope. You can save all these numbers into your central database (Leads Hub) to easily message them or include them in future personalized campaigns.
+                      </p>
+
+                      {/* Scrollable contact list */}
+                      <div className="bg-slate-950 border border-slate-850 rounded-2xl p-4 max-h-[250px] overflow-y-auto divide-y divide-slate-900/60 font-mono text-xs select-text">
+                        {contacts.length === 0 ? (
+                          <div className="text-center italic text-slate-600 py-8">
+                            No member numbers found in target scope. Make sure groups have participants metadata.
+                          </div>
+                        ) : (
+                          contacts.map((c, i) => (
+                            <div key={c.phone} className="py-2 flex items-center justify-between gap-4">
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-600 font-mono text-[10px] w-8 select-none">#{i + 1}</span>
+                                <span className="text-white font-bold select-all">+{c.phone}</span>
+                              </div>
+                              <span className="text-[10.5px] text-slate-500 truncate max-w-[240px]">
+                                Group: <span className="text-slate-400">{c.groupName}</span>
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Modal Footer */}
+                    <div className="p-6 bg-slate-950 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="text-[11px] text-slate-400 leading-tight">
+                        ⚡ <strong className="text-indigo-400">Direct Database Sync:</strong> Imports numbers as Leads instantly.
+                      </div>
+                      <div className="flex items-center gap-2 w-full sm:w-auto">
+                        <button
+                          type="button"
+                          onClick={() => setShowMembersExtractor(false)}
+                          className="flex-1 sm:flex-none py-2 px-4 bg-slate-900 hover:bg-slate-850 text-slate-400 hover:text-white rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          Close
+                        </button>
+                        <button
+                          type="button"
+                          disabled={contacts.length === 0 || isBulkSavingLeads}
+                          onClick={() => handleBulkSaveLeads(contacts)}
+                          className="flex-1 sm:flex-none py-2 px-5 bg-indigo-500 hover:bg-indigo-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-extrabold rounded-xl text-xs transition-all cursor-pointer flex items-center justify-center gap-2"
+                        >
+                          <Users className="w-4 h-4 shrink-0" />
+                          <span>{isBulkSavingLeads ? 'Importing...' : `Import ${contacts.length} Contacts to Leads Hub`}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </motion.div>
           </motion.div>
         )}

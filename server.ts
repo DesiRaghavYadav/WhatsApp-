@@ -215,6 +215,10 @@ interface SavedGroup {
   savedAt: string;
   sessionId?: string; // Storing which session captured or owns this group
   participants?: string[];
+  isAdmin?: boolean;
+  onlyAdminsCanSend?: boolean;
+  canUserSend?: boolean;
+  memberCount?: number;
 }
 
 function loadUserSavedGroups(username: string): SavedGroup[] {
@@ -227,22 +231,29 @@ function loadUserSavedGroups(username: string): SavedGroup[] {
   return [];
 }
 
-function saveUserGroupDetails(username: string, jid: string, name: string, sessionId?: string) {
+function saveUserGroupDetails(username: string, jid: string, name: string, sessionId?: string, extraDetails?: Partial<SavedGroup>) {
   try {
     const groups = loadUserSavedGroups(username);
     const existingIndex = groups.findIndex(g => g.jid === jid);
+    const details = extraDetails || {};
     if (existingIndex > -1) {
       groups[existingIndex].name = name;
       groups[existingIndex].savedAt = new Date().toISOString();
       if (sessionId) {
         groups[existingIndex].sessionId = sessionId;
       }
+      if (details.participants !== undefined) groups[existingIndex].participants = details.participants;
+      if (details.isAdmin !== undefined) groups[existingIndex].isAdmin = details.isAdmin;
+      if (details.onlyAdminsCanSend !== undefined) groups[existingIndex].onlyAdminsCanSend = details.onlyAdminsCanSend;
+      if (details.canUserSend !== undefined) groups[existingIndex].canUserSend = details.canUserSend;
+      if (details.memberCount !== undefined) groups[existingIndex].memberCount = details.memberCount;
     } else {
       groups.push({ 
         jid, 
         name, 
         savedAt: new Date().toISOString(), 
-        sessionId: sessionId || 'primary' 
+        sessionId: sessionId || 'primary',
+        ...details
       });
     }
     const filePath = path.join(getUserDir(username), 'saved_groups.json');
@@ -632,8 +643,13 @@ async function processUserQueue(username: string) {
         (!i.scheduledAt || i.scheduledAt <= new Date().toISOString())
       );
       if (hasReadyPending) {
-        addLog(username, `Queue: Waiting ${globalDelaySeconds}s delay to throttle outgoing messages...`, 'info');
-        await new Promise(resolve => setTimeout(resolve, globalDelaySeconds * 1000));
+        // Generate random offset between -5 and +10 seconds
+        const randomOffset = Math.floor(Math.random() * 16) - 5; // -5 to +10 seconds
+        // Ensure delay is at least 2 seconds to maintain connection safety
+        const actualDelay = Math.max(2, globalDelaySeconds + randomOffset);
+        
+        addLog(username, `Queue: Waiting ${actualDelay}s delay to throttle outgoing messages (Base delay: ${globalDelaySeconds}s, applied ${randomOffset >= 0 ? '+' : ''}${randomOffset}s natural human-like variation)...`, 'info');
+        await new Promise(resolve => setTimeout(resolve, actualDelay * 1000));
       }
     }
   } finally {
@@ -1661,15 +1677,13 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         const errMessage = lastDisconnect?.error?.message || 'Connection closed';
         session.lastError = errMessage;
 
-        const isSessionInvalid = 
+        // Only delete saved credentials if we got an explicit, permanent logout from WhatsApp
+        const isExplicitLogout = 
           statusCode === DisconnectReason.loggedOut || 
-          statusCode === DisconnectReason.badSession || 
-          statusCode === 411 ||
-          errMessage.toLowerCase().includes('logged out') ||
-          errMessage.toLowerCase().includes('bad session');
+          errMessage.toLowerCase().includes('logged out');
 
-        if (isSessionInvalid) {
-          addLog(username, `[SESSION: ${id}] WhatsApp session ended/invalid. Clearing credentials...`, 'info');
+        if (isExplicitLogout) {
+          addLog(username, `[SESSION: ${id}] WhatsApp session explicitly logged out. Clearing credentials...`, 'info');
           try {
             if (fs.existsSync(authFolder)) {
               fs.rmSync(authFolder, { recursive: true, force: true });
@@ -1680,10 +1694,31 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
           if (isQrTimeout) {
             addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing...`, 'info');
+            setTimeout(() => connectToWhatsApp(username, id, name), 5000);
           } else {
-            addLog(username, `[SESSION: ${id}] Connection paused (${errMessage}). Reconnecting in 5 seconds...`, 'info');
+            addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
+            
+            // If the disconnect reason is critical (e.g. restart required, stream error, rate limits, forbidden),
+            // we exit the Node process so Render's container wrapper restarts it with fully-refreshed memory.
+            const isCriticalFailure = 
+              statusCode === 515 || // restartRequired
+              statusCode === 403 || // forbidden
+              statusCode === DisconnectReason.badSession || // badSession (temporary corruption)
+              statusCode === 411 || // multideviceMismatch
+              errMessage.toLowerCase().includes('rate-limit') ||
+              errMessage.toLowerCase().includes('stream error') ||
+              errMessage.toLowerCase().includes('bad session');
+
+            if (isCriticalFailure) {
+              addLog(username, `[SESSION: ${id}] Critical state or memory pressure detected (${errMessage}). Gracefully exiting process to trigger an automatic Render container reboot...`, 'error');
+              setTimeout(() => {
+                process.exit(1);
+              }, 2000);
+            } else {
+              addLog(username, `[SESSION: ${id}] Attempting standard reconnect in 5 seconds...`, 'info');
+              setTimeout(() => connectToWhatsApp(username, id, name), 5000);
+            }
           }
-          setTimeout(() => connectToWhatsApp(username, id, name), 5000);
         }
       } else if (connection === 'open') {
         session.status = 'connected';
@@ -1700,7 +1735,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
     });
 
     sockInstance.ev.on('messages.upsert', async (m: any) => {
-      if (m.type === 'notify') {
+      if (m.type === 'notify' || m.type === 'append') {
         for (const msg of m.messages) {
           const from = msg.key.remoteJid;
           const isMe = msg.key.fromMe;
@@ -1754,7 +1789,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             continue; // Stop further processing of this message
           }
 
-          if (isMe || !from) {
+          if (!from) {
             continue;
           }
 
@@ -1804,10 +1839,30 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                              msg.message?.interactiveResponseMessage?.selectedDisplayText ||
                              msg.message?.listResponseMessage?.title;
 
+          // Identify the incoming trigger text
+          const activeTrigger = (buttonId || text || '').trim();
+
+          // Secret prefix filter check: only process automated triggers that start with prefix
+          // We enforce this check for text messages (not buttons) and bypass for getid keywords or messages sent by me
+          const normalizedText = text.trim().toLowerCase();
+          const getidKeywords = [
+            'getid', 'get id', 'id', '/id', '/getid',
+            `${secretPrefix}getid`, `${secretPrefix}id`, `${secretPrefix}get id`
+          ];
+          const isGetIdCommand = getidKeywords.includes(normalizedText);
+
+          if (!buttonId && text && !isGetIdCommand && !isMe) {
+            const hasSecret = text.startsWith(secretPrefix);
+            if (!hasSecret) {
+              // Silently ignore messages that do not match the secret prefix, keeping logging clean
+              continue;
+            }
+          }
+
           if (buttonId) {
-            addLog(username, `[SESSION: ${id}] Button clicked: from=${from} buttonId="${buttonId}" buttonText="${buttonText || ''}"`, 'success');
+            addLog(username, `[SESSION: ${id}] ${isMe ? 'My Button clicked' : 'Button clicked'}: from=${from} buttonId="${buttonId}" buttonText="${buttonText || ''}"`, 'success');
           } else if (text) {
-            addLog(username, `[SESSION: ${id}] Msg received: from=${from} text="${text.substring(0, 60)}"`, 'info');
+            addLog(username, `[SESSION: ${id}] ${isMe ? 'My Msg' : 'Msg received'}: from=${from} text="${text.substring(0, 60)}"`, 'info');
           }
 
           // 1. Passive WhatsApp Group link scanner (creates group.json)
@@ -1822,21 +1877,10 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               handleGroupInviteUrl(username, fullUrl, code, from, msg.pushName || 'Unknown Sender', text, id, sockInstance);
             }
           }
-
-          // Identify the incoming trigger text
-          const activeTrigger = (buttonId || text || '').trim();
           
-          // Register lead interaction instantly
-          registerLeadInteraction(username, from, msg.pushName || '', name || id, activeTrigger);
-
-          // Secret prefix filter check: only process automated triggers that start with prefix
-          // We enforce this check for text messages (not buttons)
-          if (!buttonId && text) {
-            const hasSecret = text.startsWith(secretPrefix);
-            if (!hasSecret) {
-              addLog(username, `[FILTER] Ignored message from ${from}: "${text.substring(0, 40)}" does not start with secret prefix "${secretPrefix}"`, 'info');
-              continue;
-            }
+          // Register lead interaction instantly (only if NOT from me)
+          if (!isMe) {
+            registerLeadInteraction(username, from, msg.pushName || '', name || id, activeTrigger);
           }
 
           // If the message is not sent by me, and is from someone else:
@@ -1881,26 +1925,49 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             }
           }
 
-          // Group ID detection "getid" or "get id" or "id" or "/id" or "/getid"
-          const normalizedText = text.trim().toLowerCase();
-          const getidKeywords = [
-            'getid', 'get id', 'id', '/id', '/getid',
-            `${secretPrefix}getid`, `${secretPrefix}id`, `${secretPrefix}get id`
-          ];
-          if (getidKeywords.includes(normalizedText) && from) {
+          if (isGetIdCommand && from) {
             const isGroup = from.endsWith('@g.us');
             if (isGroup) {
-              addLog(username, `[SESSION: ${id}] Group JID Requested: ${from}`, 'success');
+              addLog(username, `[SESSION: ${id}] Group JID Requested: ${from}. Safe throttling timer active: waiting 2.5 seconds before querying WhatsApp API...`, 'info');
+              await new Promise(resolve => setTimeout(resolve, 2500));
               try {
                 let groupName = 'Unknown Group';
+                let participants: string[] = [];
+                let isAdmin = false;
+                let onlyAdminsCanSend = false;
+                let canUserSend = true;
+                let memberCount = 0;
+
                 try {
                   const meta = await sockInstance.groupMetadata(from);
                   groupName = meta.subject || 'Unknown Group';
+                  if (meta.participants) {
+                    participants = meta.participants.map((p: any) => p.id || p.jid).filter(Boolean);
+                    memberCount = participants.length;
+                    const userJid = sockInstance.user?.id ? sockInstance.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : '';
+                    if (userJid) {
+                      const selfPart = meta.participants.find((p: any) => {
+                        const pJid = (p.id || p.jid || '').split(':')[0].split('@')[0] + '@s.whatsapp.net';
+                        return pJid === userJid;
+                      });
+                      if (selfPart) {
+                        isAdmin = !!(selfPart.admin || selfPart.isAdmin || selfPart.isSuperAdmin);
+                      }
+                    }
+                  }
+                  onlyAdminsCanSend = !!meta.announce;
+                  canUserSend = !onlyAdminsCanSend || isAdmin;
                 } catch (metaErr) {
                   console.error('Failed to fetch group metadata:', metaErr);
                 }
 
-                saveUserGroupDetails(username, from, groupName, id);
+                saveUserGroupDetails(username, from, groupName, id, {
+                  participants,
+                  isAdmin,
+                  onlyAdminsCanSend,
+                  canUserSend,
+                  memberCount
+                });
 
                 addLog(username, `[SESSION: ${id}] Saved group metadata for "${groupName}" (${from})`, 'success');
               } catch (err: any) {
@@ -1908,11 +1975,6 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               }
             } else {
               addLog(username, `[SESSION: ${id}] Individual JID requested: ${from}`, 'success');
-              try {
-                await sockInstance.sendMessage(from, { text: `📋 *Your JID:* ${from}` }, { quoted: msg });
-              } catch (err: any) {
-                addLog(username, `[SESSION: ${id}] Failed to reply to user: ${err.message}`, 'error');
-              }
             }
           }
 
@@ -2887,6 +2949,41 @@ async function startServer() {
     res.json({ success: true, leads: filtered, message: 'Lead removed successfully!' });
   });
 
+  app.post('/api/leads/bulk-add', requireAuth, (req: any, res) => {
+    const { contacts } = req.body;
+    if (!contacts || !Array.isArray(contacts)) {
+      return res.status(400).json({ success: false, error: 'contacts array is required.' });
+    }
+    const leads = loadUserLeads(req.username);
+    let addedCount = 0;
+    for (const c of contacts) {
+      const phoneClean = (c.phone || '').replace(/\D/g, '');
+      if (!phoneClean) continue;
+      const jid = phoneClean + '@s.whatsapp.net';
+      const existing = leads.find(l => l.jid === jid);
+      if (!existing) {
+        leads.push({
+          jid,
+          phone: phoneClean,
+          name: c.name || `Extracted (${phoneClean})`,
+          sessionName: c.sessionName || 'Bulk Extracted',
+          lastActive: new Date().toISOString(),
+          interactionsCount: 0,
+          lastMessage: 'Imported from Group',
+          status: 'Cold',
+          notes: c.notes || 'Imported from WhatsApp Group'
+        });
+        addedCount++;
+      }
+    }
+    saveUserLeads(req.username, leads);
+    res.json({ 
+      success: true, 
+      message: `Successfully saved ${addedCount} new contact(s) to Leads Hub!`, 
+      addedCount 
+    });
+  });
+
   // QR and Status APIs
   app.get('/api/qr', requireAuth, (req: any, res) => {
     const sessionId = (req.query.sessionId as string) || 'primary';
@@ -2920,6 +3017,131 @@ async function startServer() {
   // Saved Groups API
   app.get('/api/groups', requireAuth, (req: any, res) => {
     res.json({ success: true, groups: loadUserSavedGroups(req.username) });
+  });
+
+  const lastGroupSyncTimes = new Map<string, number>();
+
+  app.post('/api/groups/sync', requireAuth, async (req: any, res) => {
+    const { sessionIds = ['primary'] } = req.body;
+    
+    // Cooldown rate-limiting check: 15 seconds
+    const now = Date.now();
+    const lastSync = lastGroupSyncTimes.get(req.username) || 0;
+    const timeSinceLastSync = now - lastSync;
+    if (timeSinceLastSync < 15000) {
+      const remaining = Math.ceil((15000 - timeSinceLastSync) / 1000);
+      return res.status(429).json({ 
+        success: false, 
+        error: `Sync rate-limit active. Please wait ${remaining} second(s) before syncing again to protect your WhatsApp account.` 
+      });
+    }
+    lastGroupSyncTimes.set(req.username, now);
+    
+    // Find first connected session
+    let connectedSession: any = null;
+    let selectedSessionId = '';
+    for (const sid of sessionIds) {
+      const userSessKey = `${req.username}:${sid}`;
+      const s = sessions.get(userSessKey);
+      if (s && s.status === 'connected' && s.sock) {
+        connectedSession = s;
+        selectedSessionId = sid;
+        break;
+      }
+    }
+
+    if (!connectedSession) {
+      // Look for any connected session of this user
+      const userConfigs = loadUserSessionsConfig(req.username);
+      for (const c of userConfigs) {
+        const userSessKey = `${req.username}:${c.id}`;
+        const s = sessions.get(userSessKey);
+        if (s && s.status === 'connected' && s.sock) {
+          connectedSession = s;
+          selectedSessionId = c.id;
+          break;
+        }
+      }
+    }
+
+    if (!connectedSession) {
+      return res.status(400).json({ success: false, error: 'No connected WhatsApp session found. Please connect your WhatsApp account first.' });
+    }
+
+    try {
+      const sock = connectedSession.sock;
+      addLog(req.username, `🔄 Safety timer active: waiting 3 seconds before querying WhatsApp group list to comply with anti-ban protocols...`, 'info');
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      addLog(req.username, `🔄 Fetching joined groups metadata via session "${selectedSessionId}"...`, 'info');
+      
+      const groupsDict = await sock.groupFetchAllParticipating();
+      const groups = Object.values(groupsDict) as any[];
+      
+      const userJid = sock.user?.id ? sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : '';
+
+      const syncedGroups: SavedGroup[] = [];
+      const loadedSaved = loadUserSavedGroups(req.username);
+
+      for (const g of groups) {
+        const jid = g.id || g.jid;
+        if (!jid) continue;
+
+        const subject = g.subject || 'Unnamed Group';
+        
+        let isAdmin = false;
+        if (g.participants && userJid) {
+          const selfPart = g.participants.find((p: any) => {
+            const pJid = (p.id || p.jid || '').split(':')[0].split('@')[0] + '@s.whatsapp.net';
+            return pJid === userJid;
+          });
+          if (selfPart) {
+            isAdmin = !!(selfPart.admin || selfPart.isAdmin || selfPart.isSuperAdmin);
+          }
+        }
+
+        const onlyAdminsCanSend = !!g.announce;
+        const canUserSend = !onlyAdminsCanSend || isAdmin;
+
+        const groupDetails: SavedGroup = {
+          jid,
+          name: subject,
+          savedAt: new Date().toISOString(),
+          sessionId: selectedSessionId,
+          participants: g.participants ? g.participants.map((p: any) => p.id || p.jid).filter(Boolean) : [],
+          isAdmin,
+          onlyAdminsCanSend,
+          canUserSend,
+          memberCount: g.participants ? g.participants.length : 0
+        };
+
+        syncedGroups.push(groupDetails);
+
+        const existingIndex = loadedSaved.findIndex(sg => sg.jid === jid);
+        if (existingIndex > -1) {
+          loadedSaved[existingIndex] = {
+            ...loadedSaved[existingIndex],
+            ...groupDetails
+          };
+        } else {
+          loadedSaved.push(groupDetails);
+        }
+      }
+
+      const filePath = path.join(getUserDir(req.username), 'saved_groups.json');
+      fs.writeFileSync(filePath, JSON.stringify(loadedSaved, null, 2), 'utf8');
+
+      addLog(req.username, `✅ Successfully synchronized ${syncedGroups.length} WhatsApp group(s).`, 'success');
+      res.json({ 
+        success: true, 
+        message: `Successfully synchronized ${syncedGroups.length} groups!`,
+        groups: syncedGroups
+      });
+    } catch (err: any) {
+      console.error('Error syncing groups:', err);
+      addLog(req.username, `❌ Failed to synchronize groups: ${err.message || err}`, 'error');
+      res.status(500).json({ success: false, error: err.message || 'Failed to fetch groups from WhatsApp' });
+    }
   });
 
   app.delete('/api/groups/:jid', requireAuth, (req: any, res) => {
@@ -3835,6 +4057,87 @@ async function startServer() {
   });
 }
 
+// 5-Minute Host System Health Monitor & Logging Worker
+function runSystemHealthMonitor() {
+  try {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    const usedMemMB = Math.round(usedMem / (1024 * 1024));
+    const totalMemMB = Math.round(totalMem / (1024 * 1024));
+    const memPercent = Math.round((usedMem / totalMem) * 100);
+    
+    const cpus = os.cpus();
+    const coreCount = cpus ? cpus.length : 1;
+    const loadAvg = os.loadavg();
+    // Use 1-minute load avg relative to total CPU cores
+    const loadPercent = Math.min(100, Math.round((loadAvg[0] / coreCount) * 100));
+    
+    const processMem = process.memoryUsage();
+    const processRssMB = Math.round(processMem.rss / (1024 * 1024));
+    
+    // Count total active connected session sockets in memory
+    let activeSessionsCount = 0;
+    try {
+      if (typeof sessions !== 'undefined' && sessions) {
+        for (const [key, sess] of (sessions as any).entries()) {
+          if (sess.status === 'connected') {
+            activeSessionsCount++;
+          }
+        }
+      }
+    } catch (e) {}
+
+    const logMsg = `[SYSTEM MONITOR] Host Resources: CPU Core Load: ${loadPercent}% (${coreCount} Virtual Cores in Use), Total RAM Utilized: ${memPercent}% (${usedMemMB}MB / ${totalMemMB}MB), Node Process RSS: ${processRssMB}MB, Active WhatsApp Sessions: ${activeSessionsCount}. Host system status is healthy.`;
+    
+    console.log(logMsg);
+    
+    // Distribute this status message to all registered users' Telemetry Consoles
+    try {
+      const users = loadUsers();
+      for (const u of users) {
+        addLog(u.username, logMsg, 'info');
+      }
+    } catch (e) {
+      console.error('Error distributing system health logs:', e);
+    }
+  } catch (err: any) {
+    console.error('Error in background system resources monitor:', err);
+  }
+}
+
+// Trigger initial health check in 10 seconds, then repeat every 5 minutes (300,000 ms)
+setTimeout(runSystemHealthMonitor, 10000);
+setInterval(runSystemHealthMonitor, 5 * 60 * 1000);
+
 startServer().catch((err) => {
   console.error('Fatal: Server startup failed:', err);
+});
+
+// Process-Level Exception & Rejection Handlers for Robust Render Restarts
+process.on('uncaughtException', (err: any) => {
+  console.error('[FATAL PROCESS ERROR] Uncaught Exception:', err);
+  // Log message and exit to trigger immediate Render container reboot with fresh memory
+  setTimeout(() => {
+    process.exit(1);
+  }, 1000);
+});
+
+process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+  console.error('[PROCESS WARNING] Unhandled Rejection at:', promise, 'reason:', reason);
+  const errStr = String(reason?.message || reason || '');
+  
+  // Exit and restart on critical Baileys or database-related unhandled rejections to prevent silent hung states
+  if (
+    errStr.includes('Baileys') || 
+    errStr.includes('connection') || 
+    errStr.includes('rate-limit') || 
+    errStr.includes('ENOMEM') ||
+    errStr.includes('socket')
+  ) {
+    console.error('[FATAL REJECTION] Rejection is critical to active session operation. Rebooting container...');
+    setTimeout(() => {
+      process.exit(1);
+    }, 1000);
+  }
 });
