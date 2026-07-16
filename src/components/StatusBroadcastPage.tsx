@@ -95,8 +95,10 @@ export default function StatusBroadcastPage({
   // Delayed & Batched status schedules
   const [sendMode, setSendMode] = useState<'instant' | 'delayed'>('delayed');
   const [delayMinutes, setDelayMinutes] = useState<number>(5);
+  const [secondDelayMinutes, setSecondDelayMinutes] = useState<number>(10);
   const [batchSize, setBatchSize] = useState<number>(5);
   const [batchMode, setBatchMode] = useState<'members' | 'groups'>('groups');
+  const [startTime, setStartTime] = useState<string>('');
   const [activeSchedules, setActiveSchedules] = useState<any[]>([]);
   const [isLoadingSchedules, setIsLoadingSchedules] = useState<boolean>(false);
 
@@ -339,7 +341,9 @@ export default function StatusBroadcastPage({
         groupIds: selectedGroupIds,
         batchMode,
         delayMinutes,
-        batchSize
+        secondDelayMinutes: selectedGroupIds.length > 5 ? secondDelayMinutes : undefined,
+        batchSize,
+        startTime: startTime || undefined
       };
 
       try {
@@ -353,6 +357,7 @@ export default function StatusBroadcastPage({
         if (response.ok && data.success) {
           setFeedback({ type: 'success', text: data.message || 'WhatsApp Status background scheduler activated!' });
           fetchSchedules();
+          setStartTime('');
           if (statusType === 'text') {
             setTextContent('');
           } else {
@@ -1000,20 +1005,65 @@ export default function StatusBroadcastPage({
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-4">
-                            <div className="space-y-1.5">
-                              <label className="text-[10px] font-semibold text-slate-300">Delay Between Batches</label>
-                              <select
-                                value={delayMinutes}
-                                onChange={(e) => setDelayMinutes(Number(e.target.value))}
-                                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-emerald-500 cursor-pointer font-sans"
-                              >
-                                {[1, 2, 3, 5, 10, 15, 20, 30, 45, 60].map(m => (
-                                  <option key={m} value={m}>{m} minute{m > 1 ? 's' : ''}</option>
-                                ))}
-                              </select>
+                          <div className="space-y-4">
+                            {/* Delay Between Batches (1-60 min slider) */}
+                            <div className="space-y-2 bg-slate-950/40 p-3 rounded-lg border border-slate-800/40">
+                              <div className="flex justify-between items-center">
+                                <label className="text-[10px] font-semibold text-slate-300">
+                                  Gap Between Status Updates
+                                </label>
+                                <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                  {delayMinutes} min
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[10px] text-slate-500 font-mono">1m</span>
+                                <input
+                                  type="range"
+                                  min="1"
+                                  max="60"
+                                  step="1"
+                                  value={delayMinutes}
+                                  onChange={(e) => setDelayMinutes(Number(e.target.value))}
+                                  className="w-full accent-emerald-500 h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer border border-slate-800"
+                                />
+                                <span className="text-[10px] text-slate-500 font-mono">60m</span>
+                              </div>
                             </div>
-                            <div className="space-y-1.5">
+
+                            {/* Second Status Delay Time - Visible only if selectedGroupIds > 5 */}
+                            {selectedGroupIds.length > 5 && (
+                              <div className="space-y-2 bg-emerald-500/5 p-3 rounded-lg border border-emerald-500/15 animate-fadeIn">
+                                <div className="flex justify-between items-center">
+                                  <label className="text-[10px] font-semibold text-emerald-400 flex items-center gap-1.5">
+                                    <span>⏳ Second & Subsequent Status Delay Time</span>
+                                    <span className="bg-emerald-500/10 text-[9px] text-emerald-300 px-1.5 py-0.5 rounded">High protection</span>
+                                  </label>
+                                  <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                                    {secondDelayMinutes} min
+                                  </span>
+                                </div>
+                                <p className="text-[9px] text-slate-400 leading-normal">
+                                  Since you selected {selectedGroupIds.length} groups (&gt; 5), we strongly recommend configuring a custom delay for subsequent status posts to prevent account flagging.
+                                </p>
+                                <div className="flex items-center gap-3 mt-1">
+                                  <span className="text-[10px] text-slate-500 font-mono">1m</span>
+                                  <input
+                                    type="range"
+                                    min="1"
+                                    max="60"
+                                    step="1"
+                                    value={secondDelayMinutes}
+                                    onChange={(e) => setSecondDelayMinutes(Number(e.target.value))}
+                                    className="w-full accent-emerald-500 h-1.5 bg-slate-950 rounded-lg appearance-none cursor-pointer border border-slate-800"
+                                  />
+                                  <span className="text-[10px] text-slate-500 font-mono">60m</span>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Batch Size Selector */}
+                            <div className="space-y-1.5 bg-slate-950/40 p-3 rounded-lg border border-slate-800/40">
                               <label className="text-[10px] font-semibold text-slate-300">
                                 {batchMode === 'groups' ? 'Groups Per Status' : 'Members Per Status'}
                               </label>
@@ -1033,6 +1083,20 @@ export default function StatusBroadcastPage({
                                 )}
                               </select>
                             </div>
+                          </div>
+
+                          {/* Future Start Time Picker */}
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-semibold text-slate-300 flex items-center gap-1">
+                              <span>Future Start Time (Optional)</span>
+                              <span className="text-[9px] text-slate-500 font-normal">(Leave blank for instant run)</span>
+                            </label>
+                            <input
+                              type="datetime-local"
+                              value={startTime}
+                              onChange={(e) => setStartTime(e.target.value)}
+                              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-emerald-500 cursor-pointer font-sans"
+                            />
                           </div>
 
                           <div className="text-[10.5px] leading-normal text-emerald-400/80 bg-slate-950/50 p-2.5 rounded-lg border border-emerald-500/10 font-mono">

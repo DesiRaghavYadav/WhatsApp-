@@ -4,7 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
 import { createServer as createViteServer } from 'vite';
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia } from '@queenanya/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -427,6 +427,28 @@ interface QueueItem {
   error?: string;
   workflowName?: string;
   tagGroupMembers?: boolean;
+  batchMentions?: string[];
+  tagJobId?: string;
+  tagJobTotal?: number;
+  tagJobCompleted?: number;
+  tagJobBatchIndex?: number;
+  tagJobBatchCount?: number;
+  scheduledAt?: string;
+}
+
+function loadUserPausedQueues(username: string): string[] {
+  const filePath = path.join(getUserDir(username), 'paused_queues.json');
+  try {
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+  } catch (err) {}
+  return [];
+}
+
+function saveUserPausedQueues(username: string, paused: string[]) {
+  const filePath = path.join(getUserDir(username), 'paused_queues.json');
+  fs.writeFileSync(filePath, JSON.stringify(paused, null, 2), 'utf8');
 }
 
 function loadUserQueue(username: string): QueueItem[] {
@@ -515,7 +537,13 @@ async function processUserQueue(username: string) {
   try {
     while (true) {
       const queue = loadUserQueue(username);
-      const pendingIndex = queue.findIndex(i => i.status === 'pending');
+      const pausedSessions = loadUserPausedQueues(username);
+      const nowStr = new Date().toISOString();
+      const pendingIndex = queue.findIndex(i => 
+        i.status === 'pending' && 
+        !pausedSessions.includes(i.sessionId) &&
+        (!i.scheduledAt || i.scheduledAt <= nowStr)
+      );
       if (pendingIndex === -1) {
         break;
       }
@@ -598,7 +626,12 @@ async function processUserQueue(username: string) {
       }
 
       const checkQueue = loadUserQueue(username);
-      if (checkQueue.some(i => i.status === 'pending')) {
+      const hasReadyPending = checkQueue.some(i => 
+        i.status === 'pending' && 
+        !pausedSessions.includes(i.sessionId) &&
+        (!i.scheduledAt || i.scheduledAt <= new Date().toISOString())
+      );
+      if (hasReadyPending) {
         addLog(username, `Queue: Waiting ${globalDelaySeconds}s delay to throttle outgoing messages...`, 'info');
         await new Promise(resolve => setTimeout(resolve, globalDelaySeconds * 1000));
       }
@@ -759,7 +792,10 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
   let tempFilePath: string | null = null;
   let mentions: string[] = [];
 
-  if (item.tagGroupMembers && targetJid.endsWith('@g.us')) {
+  if (Array.isArray(item.batchMentions) && item.batchMentions.length > 0) {
+    mentions = item.batchMentions;
+    addLog(username, `Queue: Using pre-batched mentions of ${mentions.length} members for ${targetJid}`, 'info');
+  } else if (item.tagGroupMembers && targetJid.endsWith('@g.us')) {
     try {
       addLog(username, `Queue: Fetching group participants to tag in background for ${targetJid}...`, 'info');
       const metadata = await sockInstance.groupMetadata(targetJid);
@@ -2301,7 +2337,9 @@ async function checkAndProcessStatusSchedules() {
                 sched.status = 'completed';
                 sched.nextRunAt = null;
               } else {
-                sched.nextRunAt = new Date(Date.now() + sched.delayMinutes * 60 * 1000).toISOString();
+                const completedCount = (sched.completedGroups || []).length;
+                const nextDelay = (completedCount >= 1 && sched.secondDelayMinutes) ? sched.secondDelayMinutes : sched.delayMinutes;
+                sched.nextRunAt = new Date(Date.now() + nextDelay * 60 * 1000).toISOString();
               }
               hasChanges = true;
               continue;
@@ -2323,7 +2361,9 @@ async function checkAndProcessStatusSchedules() {
                 sched.status = 'completed';
                 sched.nextRunAt = null;
               } else {
-                sched.nextRunAt = new Date(Date.now() + sched.delayMinutes * 60 * 1000).toISOString();
+                const completedCount = (sched.completedGroups || []).length;
+                const nextDelay = (completedCount >= 1 && sched.secondDelayMinutes) ? sched.secondDelayMinutes : sched.delayMinutes;
+                sched.nextRunAt = new Date(Date.now() + nextDelay * 60 * 1000).toISOString();
               }
               hasChanges = true;
             } else {
@@ -2354,7 +2394,9 @@ async function checkAndProcessStatusSchedules() {
                 sched.status = 'completed';
                 sched.nextRunAt = null;
               } else {
-                sched.nextRunAt = new Date(Date.now() + sched.delayMinutes * 60 * 1000).toISOString();
+                const completedCount = (sched.completedMembers || []).length;
+                const nextDelay = (completedCount >= 1 && sched.secondDelayMinutes) ? sched.secondDelayMinutes : sched.delayMinutes;
+                sched.nextRunAt = new Date(Date.now() + nextDelay * 60 * 1000).toISOString();
               }
               hasChanges = true;
             } else {
@@ -2377,6 +2419,23 @@ async function checkAndProcessStatusSchedules() {
 
 // Check every 10 seconds for active status schedules
 setInterval(checkAndProcessStatusSchedules, 10000);
+
+// Background worker to check and process user queues for future-scheduled messages and retry pending ones
+async function checkAndProcessAllUserQueues() {
+  try {
+    const users = loadUsers();
+    for (const u of users) {
+      processUserQueue(u.username).catch(err => {
+        console.error(`Error processing queue in background for user ${u.username}:`, err);
+      });
+    }
+  } catch (err) {
+    console.error('Error in background queue checker:', err);
+  }
+}
+
+// Run queue checker every 10 seconds
+setInterval(checkAndProcessAllUserQueues, 10000);
 
 function requireAuth(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
@@ -3186,7 +3245,8 @@ async function startServer() {
       inlineAttachment = false,
       sessionIds = ['primary'],
       splitByCommas = true,
-      tagGroupMembers = false
+      tagGroupMembers = false,
+      scheduledAt
     } = req.body;
 
     if (!phoneNumber) {
@@ -3237,6 +3297,67 @@ async function startServer() {
         }
       }
 
+      if (recipientType === 'group' && tagGroupMembers) {
+        try {
+          const userSessKey = `${req.username}:${assignedSessionId}`;
+          const sess = sessions.get(userSessKey);
+          if (sess && sess.sock) {
+            addLog(req.username, `Queue API: Fetching participants to split group tagging into batches for ${targetJid}`, 'info');
+            const metadata = await sess.sock.groupMetadata(targetJid);
+            if (metadata && metadata.participants) {
+              const myJid = sess.sock.user?.id ? (sess.sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : null;
+              const participants = metadata.participants
+                .filter((p: any) => {
+                  const isMe = myJid && (p.id.split('@')[0] === myJid.split('@')[0]);
+                  const isAdmin = p.admin === 'admin' || p.admin === 'superadmin';
+                  return !isMe && !isAdmin;
+                })
+                .map((p: any) => p.id);
+
+              if (participants.length > 0) {
+                const batchSize = 10;
+                const tagJobId = `tagjob_${Math.random().toString(36).substring(7)}`;
+                const totalMembers = participants.length;
+                const totalBatches = Math.ceil(totalMembers / batchSize);
+
+                for (let b = 0; b < participants.length; b += batchSize) {
+                  const batchMembers = participants.slice(b, b + batchSize);
+                  const item = pushToUserQueue(req.username, {
+                    recipient: targetJid,
+                    recipientType,
+                    messageType: msgType,
+                    message,
+                    footer,
+                    attachmentType,
+                    attachmentUrl,
+                    attachmentData,
+                    attachmentName,
+                    inlineAttachment,
+                    buttons,
+                    templateButtons,
+                    listButtonText,
+                    listSections,
+                    sessionId: assignedSessionId,
+                    tagGroupMembers: false,
+                    batchMentions: batchMembers,
+                    tagJobId,
+                    tagJobTotal: totalMembers,
+                    tagJobCompleted: b,
+                    tagJobBatchIndex: Math.floor(b / batchSize) + 1,
+                    tagJobBatchCount: totalBatches,
+                    scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
+                  });
+                  addedItems.push(item);
+                }
+                continue; // Skip the default single queue push
+              }
+            }
+          }
+        } catch (err: any) {
+          console.error('[API SEND] Error setting up pre-batched group tagging:', err);
+        }
+      }
+
       const item = pushToUserQueue(req.username, {
         recipient: targetJid,
         recipientType,
@@ -3253,7 +3374,8 @@ async function startServer() {
         listButtonText,
         listSections,
         sessionId: assignedSessionId,
-        tagGroupMembers: !!tagGroupMembers
+        tagGroupMembers: !!tagGroupMembers,
+        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
       });
       addedItems.push(item);
     }
@@ -3452,7 +3574,9 @@ async function startServer() {
       groupIds = [],
       batchMode = 'members', // 'members' or 'groups'
       delayMinutes = 5,
-      batchSize = 5
+      secondDelayMinutes,
+      batchSize = 5,
+      startTime
     } = req.body;
 
     const isGroupMode = batchMode === 'groups';
@@ -3468,6 +3592,7 @@ async function startServer() {
     }
 
     const cleanDelay = Math.max(1, Math.min(60, Number(delayMinutes) || 5));
+    const cleanSecondDelay = secondDelayMinutes ? Math.max(1, Math.min(60, Number(secondDelayMinutes))) : undefined;
     const cleanBatchSize = Math.max(1, Math.min(100, Number(batchSize) || 5));
 
     const schedId = 'sched-' + Math.random().toString(36).substring(7);
@@ -3490,10 +3615,11 @@ async function startServer() {
       remainingGroups: groupIds,
       completedGroups: [],
       delayMinutes: cleanDelay,
+      secondDelayMinutes: cleanSecondDelay,
       batchSize: cleanBatchSize,
       status: 'active',
       createdAt: new Date().toISOString(),
-      nextRunAt: new Date(Date.now() + 5000).toISOString() // start first batch in 5 seconds!
+      nextRunAt: startTime ? new Date(startTime).toISOString() : new Date(Date.now() + 5000).toISOString() // start first batch at future time or in 5s!
     };
 
     const filePath = path.join(getUserDir(req.username), 'status_schedules.json');
@@ -3564,6 +3690,92 @@ async function startServer() {
     } else {
       res.status(404).json({ success: false, error: 'Schedule not found' });
     }
+  });
+
+  // Queue Management APIs
+  app.get('/api/queue/paused', requireAuth, (req: any, res) => {
+    res.json({ success: true, pausedSessions: loadUserPausedQueues(req.username) });
+  });
+
+  app.post('/api/queue/paused/toggle', requireAuth, (req: any, res) => {
+    const { sessionId } = req.body;
+    if (!sessionId) {
+      return res.status(400).json({ success: false, error: 'sessionId is required' });
+    }
+    const paused = loadUserPausedQueues(req.username);
+    const idx = paused.indexOf(sessionId);
+    if (idx > -1) {
+      paused.splice(idx, 1);
+      addLog(req.username, `▶️ Resumed dispatch queue for sending account: ${sessionId}`, 'success');
+    } else {
+      paused.push(sessionId);
+      addLog(req.username, `⏸️ Paused dispatch queue for sending account: ${sessionId}`, 'info');
+    }
+    saveUserPausedQueues(req.username, paused);
+    
+    // Trigger queue processor to check for items
+    processUserQueue(req.username);
+
+    res.json({ success: true, pausedSessions: paused });
+  });
+
+  app.post('/api/queue/reorder', requireAuth, (req: any, res) => {
+    const { itemId, action } = req.body;
+    if (!itemId || !action) {
+      return res.status(400).json({ success: false, error: 'itemId and action are required' });
+    }
+
+    const queue = loadUserQueue(req.username);
+    const index = queue.findIndex(i => i.id === itemId);
+    if (index === -1) {
+      return res.status(404).json({ success: false, error: 'Queue item not found' });
+    }
+
+    if (queue[index].status !== 'pending') {
+      return res.status(400).json({ success: false, error: 'Only pending items can be re-ordered' });
+    }
+
+    const pendingIndices = queue
+      .map((item, idx) => (item.status === 'pending' ? idx : -1))
+      .filter(idx => idx !== -1);
+
+    const relativeIndex = pendingIndices.indexOf(index);
+
+    if (action === 'up') {
+      if (relativeIndex > 0) {
+        const prevIndex = pendingIndices[relativeIndex - 1];
+        const temp = queue[index];
+        queue[index] = queue[prevIndex];
+        queue[prevIndex] = temp;
+        saveUserQueue(req.username, queue);
+        addLog(req.username, `Queue: Moved item ${itemId} UP.`, 'info');
+      }
+    } else if (action === 'down') {
+      if (relativeIndex < pendingIndices.length - 1) {
+        const nextIndex = pendingIndices[relativeIndex + 1];
+        const temp = queue[index];
+        queue[index] = queue[nextIndex];
+        queue[nextIndex] = temp;
+        saveUserQueue(req.username, queue);
+        addLog(req.username, `Queue: Moved item ${itemId} DOWN.`, 'info');
+      }
+    } else if (action === 'top') {
+      if (relativeIndex > 0) {
+        const firstPendingIndex = pendingIndices[0];
+        const [itemToMove] = queue.splice(index, 1);
+        queue.splice(firstPendingIndex, 0, itemToMove);
+        saveUserQueue(req.username, queue);
+        addLog(req.username, `Queue: Prioritized item ${itemId} to TOP.`, 'success');
+      }
+    } else if (action === 'delete') {
+      queue.splice(index, 1);
+      saveUserQueue(req.username, queue);
+      addLog(req.username, `Queue: Deleted item ${itemId} from queue.`, 'info');
+    }
+
+    processUserQueue(req.username);
+
+    res.json({ success: true, queue: loadUserQueue(req.username) });
   });
 
   app.post('/api/logout', requireAuth, async (req: any, res) => {

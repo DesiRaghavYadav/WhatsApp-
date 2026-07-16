@@ -5,6 +5,7 @@ import ListFlowStudioPage from './components/ListFlowStudioPage';
 import LeadsHubPage from './components/LeadsHubPage';
 import SharesManagerPage from './components/SharesManagerPage';
 import StatusBroadcastPage from './components/StatusBroadcastPage';
+import { QueueManagerPage } from './components/QueueManagerPage';
 import { 
   Send, 
   QrCode, 
@@ -27,6 +28,10 @@ import {
   Trash2,
   Sparkles,
   Link2,
+  Smartphone,
+  Maximize2,
+  Eye,
+  MoreVertical,
   Layers,
   Zap,
   Bookmark,
@@ -54,7 +59,11 @@ import {
   Globe,
   Share2,
   Forward,
-  Menu
+  Menu,
+  Play,
+  Pause,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 
 import {
@@ -315,6 +324,7 @@ export default function App() {
 
   // Queue state
   const [queueItems, setQueueItems] = useState<any[]>([]);
+  const [pausedSessions, setPausedSessions] = useState<string[]>([]);
   const [isProcessingQueueState, setIsProcessingQueueState] = useState<boolean>(false);
   const [globalDelaySecondsState, setGlobalDelaySecondsState] = useState<number>(2);
 
@@ -327,6 +337,9 @@ export default function App() {
   const [message, setMessage] = useState<string>('');
   const [isSending, setIsSending] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [scheduledAt, setScheduledAt] = useState<string>('');
+  const [isTemplatePreviewOpen, setIsTemplatePreviewOpen] = useState<boolean>(false);
+  const [previewLogs, setPreviewLogs] = useState<string[]>([]);
 
   // Advanced Message Type State
   const [msgType, setMsgType] = useState<'navi-template' | 'text' | 'buttons' | 'template'>('navi-template');
@@ -806,6 +819,57 @@ export default function App() {
     }
   };
 
+  const fetchPausedSessions = async () => {
+    try {
+      const res = await fetchWithAuth('/api/queue/paused');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.pausedSessions)) {
+          setPausedSessions(data.pausedSessions);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching paused sessions:', e);
+    }
+  };
+
+  const handleTogglePauseSession = async (sessionId: string) => {
+    try {
+      const res = await fetchWithAuth('/api/queue/paused/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.pausedSessions)) {
+          setPausedSessions(data.pausedSessions);
+          fetchQueue();
+        }
+      }
+    } catch (e) {
+      console.error('Error toggling paused session:', e);
+    }
+  };
+
+  const handleQueueReorder = async (itemId: string, action: 'up' | 'down' | 'top' | 'delete') => {
+    try {
+      const res = await fetchWithAuth('/api/queue/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemId, action })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.queue)) {
+          setQueueItems(data.queue);
+        }
+      }
+    } catch (e) {
+      console.error('Error reordering queue:', e);
+    }
+  };
+
   const fetchAnalytics = async () => {
     setIsLoadingAnalytics(true);
     try {
@@ -1010,6 +1074,7 @@ export default function App() {
     fetchSessions();
     fetchGroups();
     fetchQueue();
+    fetchPausedSessions();
     if (currentView === 'analytics') {
       fetchAnalytics();
     }
@@ -1022,6 +1087,7 @@ export default function App() {
       fetchSessions();
       fetchGroups();
       fetchQueue();
+      fetchPausedSessions();
       if (currentView === 'analytics') {
         fetchAnalytics();
       }
@@ -1104,7 +1170,8 @@ export default function App() {
             inlineAttachment,
             sessionIds: selectedSessionIds,
             splitByCommas,
-            tagGroupMembers: recipientType === 'group' ? tagGroupMembers : false
+            tagGroupMembers: recipientType === 'group' ? tagGroupMembers : false,
+            scheduledAt: scheduledAt || undefined
           };
 
       const res = await fetchWithAuth(endpoint, {
@@ -1121,6 +1188,7 @@ export default function App() {
         if (msgType === 'text') {
           setMessage('');
         }
+        setScheduledAt('');
         // Reset attachments upon successful delivery
         setAttachmentType('none');
         setAttachmentData('');
@@ -1554,6 +1622,12 @@ export default function App() {
       label: 'Captured Shares',
       description: 'Incoming media & links log',
       icon: Share2,
+    },
+    {
+      id: 'queue-manager',
+      label: 'Queue Studio',
+      description: 'Pause or prioritize account message queues',
+      icon: List,
     },
     {
       id: 'settings',
@@ -2338,17 +2412,31 @@ export default function App() {
             <div id="messaging-card" className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl backdrop-blur-sm relative overflow-hidden">
               <div className="absolute top-0 left-0 w-1.5 h-full bg-teal-500" />
               
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-850">
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-teal-400" />
-                  <span>2. Dispatch Studio</span>
-                  {isProcessingQueueState && queueItems.some(i => i.status === 'pending' || i.status === 'sending') && (
-                    <span className="flex items-center gap-1.5 ml-2 px-2.5 py-0.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 rounded-full text-[10px] font-bold uppercase tracking-wider animate-pulse">
-                      <RefreshCw className="w-3 h-3 animate-spin" />
-                      <span>Sending Queue ({queueItems.filter(i => i.status === 'pending' || i.status === 'sending').length})</span>
-                    </span>
-                  )}
-                </h2>
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-850">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Zap className="w-5 h-5 text-teal-400" />
+                    <span>2. Dispatch Studio</span>
+                    {isProcessingQueueState && queueItems.some(i => i.status === 'pending' || i.status === 'sending') && (
+                      <span className="flex items-center gap-1.5 ml-2 px-2.5 py-0.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 rounded-full text-[10px] font-bold uppercase tracking-wider animate-pulse">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        <span>Sending Queue ({queueItems.filter(i => i.status === 'pending' || i.status === 'sending').length})</span>
+                      </span>
+                    )}
+                  </h2>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsTemplatePreviewOpen(true);
+                      setPreviewLogs([`[${new Date().toLocaleTimeString()}] Live device preview session initialized.`]);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-teal-500/10 hover:bg-teal-500/25 text-teal-400 hover:text-teal-300 border border-teal-500/20 hover:border-teal-400/40 rounded-lg text-[10.5px] font-bold tracking-wide transition-all cursor-pointer shadow-sm active:scale-95"
+                  >
+                    <Smartphone className="w-3.5 h-3.5 animate-pulse" />
+                    <span>📱 Template Preview</span>
+                  </button>
+                </div>
 
                 {/* Message type selector */}
                 <div className="flex flex-wrap bg-slate-950 p-1 rounded-xl border border-slate-850 gap-1">
@@ -2398,6 +2486,65 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {/* Group Tagging Batch Progress Bar */}
+              {(() => {
+                const activeTagJobItem = queueItems.find(i => i.tagJobId && (i.status === 'pending' || i.status === 'sending'));
+                if (!activeTagJobItem) return null;
+
+                const tagJobItems = queueItems.filter(i => i.tagJobId === activeTagJobItem.tagJobId);
+                const tagJobPendingOrSending = tagJobItems.filter(i => i.status === 'pending' || i.status === 'sending');
+                const tagJobTotal = activeTagJobItem.tagJobTotal || 0;
+                const tagJobCompletedMembersCount = activeTagJobItem.tagJobCompleted || 0;
+                const tagJobProgressPercent = tagJobTotal > 0 ? Math.round((tagJobCompletedMembersCount / tagJobTotal) * 100) : 0;
+                const tagJobTimeRemainingSec = tagJobPendingOrSending.length * globalDelaySecondsState;
+
+                return (
+                  <motion.div 
+                    initial={{ opacity: 0, y: -10 }} 
+                    animate={{ opacity: 1, y: 0 }} 
+                    exit={{ opacity: 0, y: -10 }}
+                    className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4.5 mb-6 text-left relative overflow-hidden"
+                  >
+                    <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500 animate-pulse" />
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Activity className="w-4.5 h-4.5 text-emerald-400 animate-spin" />
+                        <div>
+                          <span className="text-xs font-bold text-white block">Active Group Tagging Batch Cycle</span>
+                          <span className="text-[10px] text-slate-400 font-mono">Job ID: {activeTagJobItem.tagJobId}</span>
+                        </div>
+                      </div>
+                      <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/15 px-2.5 py-0.5 rounded border border-emerald-500/20">
+                        {tagJobProgressPercent}%
+                      </span>
+                    </div>
+
+                    <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden mb-2.5 border border-slate-800">
+                      <div 
+                        className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full rounded-full transition-all duration-500" 
+                        style={{ width: `${tagJobProgressPercent}%` }}
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap justify-between items-center text-[11px] text-slate-300 gap-2">
+                      <div className="flex items-center gap-1">
+                        <span>Processed:</span>
+                        <strong className="text-white font-bold">{tagJobCompletedMembersCount}</strong>
+                        <span>/</span>
+                        <strong className="text-white font-bold">{tagJobTotal} members</strong>
+                        <span className="text-slate-500 font-mono">({activeTagJobItem.tagJobBatchIndex} of {activeTagJobItem.tagJobBatchCount} batches)</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-slate-400">
+                        <Clock className="w-3.5 h-3.5 text-teal-400" />
+                        <span>Cycle Duration: {globalDelaySecondsState}s/msg</span>
+                        <span className="text-slate-600">|</span>
+                        <span className="text-white">Est. Time Remaining: <strong className="text-teal-400 font-mono font-extrabold">{tagJobTimeRemainingSec}s</strong></span>
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })()}
 
               <div className="grid grid-cols-1 md:grid-cols-12 gap-8">
                 
@@ -3000,6 +3147,39 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Future Scheduling */}
+                    <div className="space-y-2 bg-slate-950/40 p-3.5 rounded-xl border border-slate-850">
+                      <div className="flex justify-between items-center">
+                        <label className="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-teal-400" />
+                          <span>Future Dispatch Start Time</span>
+                        </label>
+                        {scheduledAt && (
+                          <button
+                            type="button"
+                            onClick={() => setScheduledAt('')}
+                            className="text-[10px] text-rose-400 hover:text-rose-300 font-bold uppercase tracking-wider cursor-pointer"
+                          >
+                            Cancel Schedule
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-[9px] text-slate-500 leading-tight">
+                        Queue this dispatch to process automatically at a future date and time. Leave empty to dispatch immediately.
+                      </p>
+                      <input
+                        type="datetime-local"
+                        value={scheduledAt}
+                        onChange={(e) => setScheduledAt(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-850 hover:border-slate-700 focus:border-teal-500 rounded-lg px-3 py-1.5 text-xs text-white outline-none cursor-pointer font-mono"
+                      />
+                      {scheduledAt && (
+                        <div className="text-[9.5px] text-emerald-400 font-medium font-mono flex items-center gap-1">
+                          <span>🎯 Queued to dispatch after: {new Date(scheduledAt).toLocaleString()}</span>
+                        </div>
+                      )}
+                    </div>
+
                     {/* Feedback Alert */}
                     <AnimatePresence>
                       {feedback && (
@@ -3360,6 +3540,15 @@ export default function App() {
             fetchWithAuth={fetchWithAuth}
             setFeedback={setFeedback}
             sessionsList={sessionsList}
+          />
+        ) : currentView === 'queue-manager' ? (
+          <QueueManagerPage
+            queueItems={queueItems}
+            pausedSessions={pausedSessions}
+            sessionsList={sessionsList}
+            handleTogglePauseSession={handleTogglePauseSession}
+            handleQueueReorder={handleQueueReorder}
+            globalDelaySecondsState={globalDelaySecondsState}
           />
         ) : currentView === 'settings' ? (
           <div className="space-y-8 animate-fadeIn">
@@ -4138,6 +4327,300 @@ export default function App() {
               </form>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* Immersive Fullscreen Template Preview Modal */}
+      <AnimatePresence>
+        {isTemplatePreviewOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex items-center justify-center p-4 md:p-8 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 20 }}
+              className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-full max-h-[85vh]"
+            >
+              {/* Left Column: Interactive Mobile Mockup (Large scale) */}
+              <div className="flex-1 bg-slate-950/50 p-6 flex flex-col items-center justify-center border-b md:border-b-0 md:border-r border-slate-800/80 overflow-y-auto">
+                <div className="w-full max-w-[340px] aspect-[9/18.5] bg-slate-950 border-8 border-slate-800 rounded-[40px] relative overflow-hidden flex flex-col shadow-2xl ring-4 ring-emerald-500/10">
+                  {/* Camera / Speaker Notch */}
+                  <div className="absolute top-2 left-1/2 -translate-x-1/2 w-28 h-5 bg-slate-800 rounded-full z-15 flex items-center justify-center">
+                    <div className="w-2.5 h-2.5 bg-slate-950 rounded-full mr-2 border border-slate-900" />
+                    <div className="w-12 h-1 bg-slate-700 rounded-full" />
+                  </div>
+                  
+                  {/* Phone Status bar */}
+                  <div className="bg-teal-700 text-slate-300 px-6 pt-7 pb-1.5 flex justify-between items-center text-[10px] select-none font-mono">
+                    <span>9:41 AM</span>
+                    <div className="flex items-center gap-1.5">
+                      <Wifi className="w-3 h-3 text-emerald-400" />
+                      <span className="font-bold text-emerald-400">5G</span>
+                      <div className="w-5 h-2.5 border border-slate-400 rounded-sm p-0.5 flex items-center">
+                        <div className="bg-emerald-400 h-full w-full rounded-2xs" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Header */}
+                  <div className="bg-teal-700/90 text-white px-4 py-3 flex items-center justify-between border-b border-teal-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-teal-300">
+                        {recipientType === 'individual' ? '👤' : '👥'}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-xs truncate max-w-[150px]">
+                          {phoneNumber ? '+' + getCleanNumber(phoneNumber) : 'Recipient Contact'}
+                        </div>
+                        <div className="text-[9px] text-teal-300 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
+                          <span>online</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      <Phone className="w-3.5 h-3.5 text-slate-300 hover:text-white cursor-pointer" />
+                      <MoreVertical className="w-3.5 h-3.5 text-slate-300 hover:text-white cursor-pointer" />
+                    </div>
+                  </div>
+
+                  {/* Chat Canvas Area with high fidelity background pattern */}
+                  <div className="flex-1 p-3 bg-[radial-gradient(#ffffff0a_1px,transparent_1px)] [background-size:12px_12px] bg-slate-950 flex flex-col justify-end overflow-y-auto">
+                    <AnimatePresence>
+                      {msgType === 'navi-template' || message.trim() ? (
+                        <motion.div
+                          initial={{ scale: 0.95, opacity: 0, y: 15 }}
+                          animate={{ scale: 1, opacity: 1, y: 0 }}
+                          className="bg-[#0b141a] border border-[#202c33] rounded-2xl text-slate-100 max-w-[90%] self-end relative break-words shadow-2xl overflow-hidden flex flex-col w-full"
+                        >
+                          {/* Render Attachment if type !== 'none' and URL is provided */}
+                          {attachmentType !== 'none' && attachmentUrl && (
+                            <div className="p-1 border-b border-[#202c33]/40 bg-[#111b21]/40">
+                              {attachmentType === 'image' && (
+                                <img
+                                  src={attachmentUrl}
+                                  alt="Attachment Preview"
+                                  className="w-full h-36 object-cover rounded-xl"
+                                  onError={(e) => {
+                                    e.currentTarget.src = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800";
+                                  }}
+                                />
+                              )}
+                              {attachmentType === 'video' && (
+                                <div className="relative w-full h-36 bg-black rounded-xl overflow-hidden flex items-center justify-center">
+                                  <video src={attachmentUrl} className="w-full h-full object-cover" muted loop autoPlay />
+                                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                    <Video className="w-8 h-8 text-white/80 animate-pulse" />
+                                  </div>
+                                </div>
+                              )}
+                              {attachmentType === 'pdf' && (
+                                <div className="flex items-center gap-3 p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+                                  <FileText className="w-8 h-8 text-rose-500 shrink-0" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-[11px] font-bold text-white truncate">{attachmentName || "invoice.pdf"}</div>
+                                    <div className="text-[9px] text-slate-500 font-mono">PDF Document</div>
+                                  </div>
+                                </div>
+                              )}
+                              {attachmentType === 'doc' && (
+                                <div className="flex items-center gap-3 p-3 bg-slate-900/60 rounded-xl border border-slate-800">
+                                  <FileCode className="w-8 h-8 text-teal-400 shrink-0" />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-[11px] font-bold text-white truncate">{attachmentName || "document.docx"}</div>
+                                    <div className="text-[9px] text-slate-500 font-mono">Word Document</div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Message Body Content */}
+                          <div className="p-3.5 text-xs leading-relaxed whitespace-pre-wrap text-left select-text">
+                            {msgType === 'navi-template' 
+                              ? 'Hello\n\nYour prepaid recharge of ₹199 for Airtel is expiring today.\n\nPay Now via Navi UPI.'
+                              : message}
+                          </div>
+
+                          {/* Footer text if enabled */}
+                          {msgType === 'navi-template' ? (
+                            <div className="px-3.5 pb-2.5 text-[9.5px] text-slate-400 italic text-left border-t border-[#202c33]/40 pt-1.5">
+                              Secure service from Meta
+                            </div>
+                          ) : (
+                            (msgType === 'buttons' || msgType === 'template') && footerText && (
+                              <div className="px-3.5 pb-2.5 text-[9.5px] text-slate-400 italic text-left border-t border-[#202c33]/40 pt-1.5">
+                                {footerText}
+                              </div>
+                            )
+                          )}
+
+                          {/* Interactive Buttons (Traditional / Quick-Replies) */}
+                          {msgType === 'buttons' && !(msgType === 'navi-template') && customButtons.length > 0 && (
+                            <div className="border-t border-[#202c33] flex flex-col divide-y divide-[#202c33] bg-[#111b21]">
+                              {customButtons.map((btn, i) => (
+                                <button
+                                  key={btn.id || i}
+                                  type="button"
+                                  onClick={() => {
+                                    const logMsg = `[${new Date().toLocaleTimeString()}] Clicked Quick-Reply Button: "${btn.text || 'Custom Button'}" (ID: ${btn.id})`;
+                                    setPreviewLogs(prev => [...prev, logMsg]);
+                                  }}
+                                  className="w-full text-center py-2.5 text-xs font-bold text-emerald-400 hover:bg-[#202c33] active:bg-[#202c33]/80 transition-colors select-none cursor-pointer"
+                                >
+                                  {btn.text || `Button ${i+1}`}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Template Buttons (Call / Web URL / Quick Reply) */}
+                          {msgType === 'template' && !(msgType === 'navi-template') && templateButtons.length > 0 && (
+                            <div className="border-t border-[#202c33] flex flex-col divide-y divide-[#202c33] bg-[#111b21]">
+                              {templateButtons.map((btn, i) => (
+                                <button
+                                  key={btn.id || i}
+                                  type="button"
+                                  onClick={() => {
+                                    let logMsg = '';
+                                    if (btn.type === 'url') {
+                                      logMsg = `[${new Date().toLocaleTimeString()}] Triggered Link Out to URL: "${btn.url || 'https://'}" (Button Label: "${btn.text}")`;
+                                    } else if (btn.type === 'call') {
+                                      logMsg = `[${new Date().toLocaleTimeString()}] Initiated Mobile Call Sequence to: "${btn.phoneNumber || 'N/A'}" (Button Label: "${btn.text}")`;
+                                    } else {
+                                      logMsg = `[${new Date().toLocaleTimeString()}] Clicked Template Action: "${btn.text}"`;
+                                    }
+                                    setPreviewLogs(prev => [...prev, logMsg]);
+                                  }}
+                                  className="w-full flex items-center justify-center gap-1.5 py-2.5 px-3 text-xs font-bold text-emerald-400 hover:bg-[#202c33] active:bg-[#202c33]/80 transition-colors select-none cursor-pointer"
+                                >
+                                  {btn.type === 'url' && <Link2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                                  {btn.type === 'call' && <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />}
+                                  <span className="truncate">{btn.text || 'Action'}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Navi Template Button */}
+                          {msgType === 'navi-template' && (
+                            <div className="border-t border-[#202c33] flex flex-col divide-y divide-[#202c33] bg-[#111b21]">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const logMsg = `[${new Date().toLocaleTimeString()}] Activated Secure Navi UPI payment flow callback (Simulated).`;
+                                  setPreviewLogs(prev => [...prev, logMsg]);
+                                }}
+                                className="w-full flex items-center justify-center gap-2 py-2.5 px-3 text-xs font-extrabold text-emerald-400 hover:bg-[#202c33] active:bg-[#202c33]/80 transition-colors select-none cursor-pointer"
+                              >
+                                <Link2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                <span className="truncate">🔗 Pay Now</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Status and timestamp */}
+                          <div className="px-3 pb-2 flex justify-end items-center gap-0.5 text-[8.5px] text-slate-500 font-mono select-none self-end bg-[#0b141a] w-full pt-1 border-t border-[#202c33]/20">
+                            <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          </div>
+                        </motion.div>
+                      ) : (
+                        <div className="text-xs text-slate-500 text-center select-none py-20 italic">
+                          No active message. Enter text to preview final layout.
+                        </div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Interaction Diagnostics and Controls */}
+              <div className="w-full md:w-[380px] p-6 flex flex-col bg-slate-900 border-t md:border-t-0 border-slate-800">
+                <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-emerald-400" />
+                    <h3 className="text-sm font-bold text-white uppercase tracking-wider">Interactive Feedback</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsTemplatePreviewOpen(false)}
+                    className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex-1 flex flex-col justify-between space-y-4">
+                  {/* Summary Details */}
+                  <div className="space-y-3 bg-slate-950 p-4 rounded-xl border border-slate-850">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Message Attributes</span>
+                    <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                      <div>
+                        <span className="text-slate-500 block">Type:</span>
+                        <span className="text-white font-semibold uppercase">{msgType}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Attachment:</span>
+                        <span className="text-white font-semibold uppercase">{attachmentType}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Recipients:</span>
+                        <span className="text-white font-semibold">
+                          {phoneNumber ? phoneNumber.split(/[\n,]+/).filter(Boolean).length : 0} contacts
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block">Mode:</span>
+                        <span className="text-white font-semibold uppercase">{recipientType}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Simulated interaction Logs */}
+                  <div className="flex-1 flex flex-col min-h-[160px] max-h-[220px]">
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Device Event Logs</span>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewLogs([`[${new Date().toLocaleTimeString()}] Logs cleared.`])}
+                        className="text-[9px] text-slate-500 hover:text-slate-300 font-semibold cursor-pointer underline"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="flex-1 bg-slate-950 border border-slate-850 rounded-xl p-3 overflow-y-auto font-mono text-[10px] text-teal-400 space-y-1.5 leading-relaxed">
+                      {previewLogs.map((log, index) => (
+                        <div key={index} className="border-b border-slate-900/50 pb-1 last:border-0">
+                          {log}
+                        </div>
+                      ))}
+                      {previewLogs.length === 0 && (
+                        <div className="text-slate-600 italic">No events recorded. Click buttons on the phone screen to simulate clicks.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions info */}
+                  <div className="text-[10px] text-slate-400 leading-normal bg-teal-500/5 p-3 rounded-xl border border-teal-500/10">
+                    💡 <strong className="text-emerald-400">Interaction Ready:</strong> You can test-click any button inside the WhatsApp mockup bubble on the left to confirm click events, deep linking, or webhook payloads!
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsTemplatePreviewOpen(false)}
+                    className="w-full bg-teal-500 hover:bg-teal-400 text-slate-950 font-bold py-2.5 px-4 rounded-xl text-xs transition-colors cursor-pointer text-center"
+                  >
+                    Return to Dispatch Studio
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
