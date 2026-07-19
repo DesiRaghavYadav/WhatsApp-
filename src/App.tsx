@@ -833,9 +833,14 @@ export default function App() {
     try {
       const res = await fetchWithAuth('/api/queue/paused');
       if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.pausedSessions)) {
-          setPausedSessions(data.pausedSessions);
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.success && Array.isArray(data.pausedSessions)) {
+            setPausedSessions(data.pausedSessions);
+          }
+        } else {
+          console.warn('Paused sessions API returned non-JSON content:', contentType);
         }
       }
     } catch (e) {
@@ -851,10 +856,15 @@ export default function App() {
         body: JSON.stringify({ sessionId })
       });
       if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.pausedSessions)) {
-          setPausedSessions(data.pausedSessions);
-          fetchQueue();
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.success && Array.isArray(data.pausedSessions)) {
+            setPausedSessions(data.pausedSessions);
+            fetchQueue();
+          }
+        } else {
+          console.warn('Toggle pause session API returned non-JSON content:', contentType);
         }
       }
     } catch (e) {

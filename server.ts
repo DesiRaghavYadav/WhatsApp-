@@ -15,6 +15,13 @@ import { getFirestore, doc, setDoc, deleteDoc, collection, getDocs } from 'fireb
 const originalWriteFileSync = fs.writeFileSync;
 const originalUnlinkSync = fs.unlinkSync;
 const originalRmSync = fs.rmSync;
+const originalWriteFile = fs.writeFile;
+const originalUnlink = fs.unlink;
+const originalRm = fs.rm;
+
+const originalPromisesWriteFile = fs.promises ? fs.promises.writeFile : null;
+const originalPromisesUnlink = fs.promises ? fs.promises.unlink : null;
+const originalPromisesRm = fs.promises ? fs.promises.rm : null;
 
 // Initialize Firebase
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
@@ -33,13 +40,9 @@ if (fs.existsSync(firebaseConfigPath)) {
   console.warn('[FIREBASE] Warning: firebase-applet-config.json not found.');
 }
 
-// Patch fs.writeFileSync to sync with Firestore
-(fs as any).writeFileSync = function(filePath: any, data: any, options?: any) {
-  // Call original write file sync so it is written locally first
-  const result = originalWriteFileSync.call(fs, filePath, data, options);
-  
-  if (!db) return result;
-
+// Helper functions to mirror changes to Firestore database
+function syncFileToFirestore(filePath: any, data: any) {
+  if (!db) return;
   try {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
@@ -61,18 +64,12 @@ if (fs.existsSync(firebaseConfigPath)) {
       }
     }
   } catch (err) {
-    console.error('[FIREBASE] Error in patched writeFileSync:', err);
+    console.error('[FIREBASE] Error in syncFileToFirestore:', err);
   }
-  
-  return result;
-};
+}
 
-// Patch fs.unlinkSync to sync deletion with Firestore
-(fs as any).unlinkSync = function(filePath: any) {
-  const result = originalUnlinkSync.call(fs, filePath);
-  
-  if (!db) return result;
-
+function syncDeleteToFirestore(filePath: any) {
+  if (!db) return;
   try {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
@@ -84,18 +81,12 @@ if (fs.existsSync(firebaseConfigPath)) {
       }
     }
   } catch (err) {
-    console.error('[FIREBASE] Error in patched unlinkSync:', err);
+    console.error('[FIREBASE] Error in syncDeleteToFirestore:', err);
   }
-  
-  return result;
-};
+}
 
-// Patch fs.rmSync to sync directory deletion with Firestore
-(fs as any).rmSync = function(filePath: any, options?: any) {
-  const result = originalRmSync.call(fs, filePath, options);
-  
-  if (!db) return result;
-
+function syncDirDeleteToFirestore(filePath: any) {
+  if (!db) return;
   try {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
@@ -118,11 +109,100 @@ if (fs.existsSync(firebaseConfigPath)) {
       }
     }
   } catch (err) {
-    console.error('[FIREBASE] Error in patched rmSync:', err);
+    console.error('[FIREBASE] Error in syncDirDeleteToFirestore:', err);
   }
-  
+}
+
+// Patch fs.writeFileSync to sync with Firestore
+(fs as any).writeFileSync = function(filePath: any, data: any, options?: any) {
+  const result = originalWriteFileSync.call(fs, filePath, data, options);
+  syncFileToFirestore(filePath, data);
   return result;
 };
+
+// Patch fs.writeFile to sync with Firestore
+(fs as any).writeFile = function(filePath: any, data: any, optionsOrCb: any, cb?: any) {
+  let actualCb = cb;
+  let options = optionsOrCb;
+  if (typeof optionsOrCb === 'function') {
+    actualCb = optionsOrCb;
+    options = undefined;
+  }
+  const result = originalWriteFile.call(fs, filePath, data, options, (err: any) => {
+    if (!err) {
+      syncFileToFirestore(filePath, data);
+    }
+    if (actualCb) actualCb(err);
+  });
+  return result;
+};
+
+// Patch fs.unlinkSync to sync deletion with Firestore
+(fs as any).unlinkSync = function(filePath: any) {
+  const result = originalUnlinkSync.call(fs, filePath);
+  syncDeleteToFirestore(filePath);
+  return result;
+};
+
+// Patch fs.unlink to sync deletion with Firestore
+(fs as any).unlink = function(filePath: any, callback: any) {
+  const result = originalUnlink.call(fs, filePath, (err: any) => {
+    if (!err) {
+      syncDeleteToFirestore(filePath);
+    }
+    if (callback) callback(err);
+  });
+  return result;
+};
+
+// Patch fs.rmSync to sync directory deletion with Firestore
+(fs as any).rmSync = function(filePath: any, options?: any) {
+  const result = originalRmSync.call(fs, filePath, options);
+  syncDirDeleteToFirestore(filePath);
+  return result;
+};
+
+// Patch fs.rm to sync directory deletion with Firestore
+(fs as any).rm = function(filePath: any, optionsOrFail: any, callback?: any) {
+  let actualCb = callback;
+  let options = optionsOrFail;
+  if (typeof optionsOrFail === 'function') {
+    actualCb = optionsOrFail;
+    options = undefined;
+  }
+  const result = originalRm.call(fs, filePath, options, (err: any) => {
+    if (!err) {
+      syncDirDeleteToFirestore(filePath);
+    }
+    if (actualCb) actualCb(err);
+  });
+  return result;
+};
+
+// Patch fs.promises to sync asynchronous operations with Firestore
+if (fs.promises) {
+  if (originalPromisesWriteFile) {
+    (fs.promises as any).writeFile = async function(filePath: any, data: any, options?: any) {
+      const result = await originalPromisesWriteFile.call(fs.promises, filePath, data, options);
+      syncFileToFirestore(filePath, data);
+      return result;
+    };
+  }
+  if (originalPromisesUnlink) {
+    (fs.promises as any).unlink = async function(filePath: any) {
+      const result = await originalPromisesUnlink.call(fs.promises, filePath);
+      syncDeleteToFirestore(filePath);
+      return result;
+    };
+  }
+  if (originalPromisesRm) {
+    (fs.promises as any).rm = async function(filePath: any, options?: any) {
+      const result = await originalPromisesRm.call(fs.promises, filePath, options);
+      syncDirDeleteToFirestore(filePath);
+      return result;
+    };
+  }
+}
 
 async function restoreAllFilesFromFirestore() {
   if (!db) {
@@ -1698,26 +1778,10 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           } else {
             addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
             
-            // If the disconnect reason is critical (e.g. restart required, stream error, rate limits, forbidden),
-            // we exit the Node process so Render's container wrapper restarts it with fully-refreshed memory.
-            const isCriticalFailure = 
-              statusCode === 515 || // restartRequired
-              statusCode === 403 || // forbidden
-              statusCode === DisconnectReason.badSession || // badSession (temporary corruption)
-              statusCode === 411 || // multideviceMismatch
-              errMessage.toLowerCase().includes('rate-limit') ||
-              errMessage.toLowerCase().includes('stream error') ||
-              errMessage.toLowerCase().includes('bad session');
-
-            if (isCriticalFailure) {
-              addLog(username, `[SESSION: ${id}] Critical state or memory pressure detected (${errMessage}). Gracefully exiting process to trigger an automatic Render container reboot...`, 'error');
-              setTimeout(() => {
-                process.exit(1);
-              }, 2000);
-            } else {
-              addLog(username, `[SESSION: ${id}] Attempting standard reconnect in 5 seconds...`, 'info');
-              setTimeout(() => connectToWhatsApp(username, id, name), 5000);
-            }
+            // Reconnect the socket instance cleanly in-memory instead of exiting the entire Node process.
+            // This prevents server downtime and avoids breaking other users' dashboards.
+            addLog(username, `[SESSION: ${id}] Recreating socket and performing clean reconnect in 5 seconds...`, 'info');
+            setTimeout(() => connectToWhatsApp(username, id, name), 5000);
           }
         }
       } else if (connection === 'open') {
