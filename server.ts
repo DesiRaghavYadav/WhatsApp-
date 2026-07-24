@@ -1714,6 +1714,16 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
   }
 
   const session = sessions.get(userSessKey)!;
+
+  // Cleanly close and remove listeners from existing socket before creating a new socket instance
+  if (session.sock) {
+    try {
+      session.sock.ev.removeAllListeners();
+      session.sock.end(undefined);
+    } catch (e) {}
+    session.sock = null;
+  }
+
   session.status = 'connecting';
   session.qrBase64 = null;
   session.activePairingCode = null;
@@ -3220,6 +3230,10 @@ async function startServer() {
     const list = userConfigs.map(c => {
       const userSessKey = `${req.username}:${c.id}`;
       const s = sessions.get(userSessKey);
+      const authFolder = path.join(process.cwd(), 'data', req.username, 'auth_info_' + c.id);
+      const credsFile = path.join(authFolder, 'creds.json');
+      const hasSavedCredentials = fs.existsSync(credsFile);
+
       return {
         id: c.id,
         name: c.name,
@@ -3227,10 +3241,55 @@ async function startServer() {
         qrBase64: s ? s.qrBase64 : null,
         pairingCode: s ? s.activePairingCode : null,
         user: s ? s.user : null,
-        lastError: s ? s.lastError : null
+        lastError: s ? s.lastError : null,
+        hasSavedCredentials
       };
     });
     res.json({ success: true, sessions: list });
+  });
+
+  app.post('/api/sessions/reconnect', requireAuth, async (req: any, res) => {
+    const { id, sessionId } = req.body;
+    const targetId = id || sessionId;
+
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: 'Session ID is required.' });
+    }
+
+    const authFolder = path.join(process.cwd(), 'data', req.username, 'auth_info_' + targetId);
+    const credsFile = path.join(authFolder, 'creds.json');
+
+    if (!fs.existsSync(credsFile)) {
+      return res.status(400).json({
+        success: false,
+        error: `No saved credentials found for session "${targetId}". Please scan QR code or request Pairing Code.`
+      });
+    }
+
+    const userSessKey = `${req.username}:${targetId}`;
+    const existingSess = sessions.get(userSessKey);
+
+    if (existingSess && existingSess.sock) {
+      try {
+        existingSess.sock.ev.removeAllListeners();
+        existingSess.sock.end(undefined);
+      } catch (e) {}
+      existingSess.sock = null;
+    }
+
+    addLog(req.username, `[SESSION: ${targetId}] Manually triggering connection re-establishment using saved credentials...`, 'info');
+
+    const configs = loadUserSessionsConfig(req.username);
+    const sessConfig = configs.find(c => c.id === targetId);
+    const sessionName = sessConfig ? sessConfig.name : (targetId === 'primary' ? 'Primary Account' : 'WhatsApp Session');
+
+    try {
+      await connectToWhatsApp(req.username, targetId, sessionName);
+      res.json({ success: true, message: `Reconnecting session "${targetId}" using saved credentials...` });
+    } catch (err: any) {
+      addLog(req.username, `[SESSION: ${targetId}] Reconnect error: ${err.message}`, 'error');
+      res.status(500).json({ success: false, error: err.message || 'Failed to reconnect session.' });
+    }
   });
 
   app.post('/api/sessions/create', requireAuth, async (req: any, res) => {
@@ -3289,8 +3348,8 @@ async function startServer() {
     }
   });
 
-  app.post('/api/sessions/delete', requireAuth, async (req: any, res) => {
-    const { id } = req.body;
+  const deleteSessionHandler = async (req: any, res: any) => {
+    const id = req.params.id || req.body.id;
     if (!id) {
       return res.status(400).json({ success: false, error: 'Session ID is required.' });
     }
@@ -3304,6 +3363,7 @@ async function startServer() {
     if (session) {
       try {
         if (session.sock) {
+          session.sock.ev.removeAllListeners();
           await session.sock.logout();
         }
       } catch (e) {}
@@ -3324,7 +3384,10 @@ async function startServer() {
 
     addLog(req.username, `Session "${id}" was deleted and credentials folder purged.`, 'success');
     res.json({ success: true, message: `Session "${id}" successfully removed.` });
-  });
+  };
+
+  app.post('/api/sessions/delete', requireAuth, deleteSessionHandler);
+  app.delete('/api/sessions/:id', requireAuth, deleteSessionHandler);
 
   // Message Queue & Wait Timers APIs
   app.get('/api/queue', requireAuth, (req: any, res) => {
@@ -4189,19 +4252,4 @@ process.on('uncaughtException', (err: any) => {
 
 process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
   console.error('[PROCESS WARNING] Unhandled Rejection at:', promise, 'reason:', reason);
-  const errStr = String(reason?.message || reason || '');
-  
-  // Exit and restart on critical Baileys or database-related unhandled rejections to prevent silent hung states
-  if (
-    errStr.includes('Baileys') || 
-    errStr.includes('connection') || 
-    errStr.includes('rate-limit') || 
-    errStr.includes('ENOMEM') ||
-    errStr.includes('socket')
-  ) {
-    console.error('[FATAL REJECTION] Rejection is critical to active session operation. Rebooting container...');
-    setTimeout(() => {
-      process.exit(1);
-    }, 1000);
-  }
 });

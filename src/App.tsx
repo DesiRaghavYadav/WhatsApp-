@@ -1018,6 +1018,29 @@ export default function App() {
     }
   };
 
+  const [isReconnectingSession, setIsReconnectingSession] = useState<Record<string, boolean>>({});
+
+  const handleReconnectSession = async (sessionId: string) => {
+    setIsReconnectingSession(prev => ({ ...prev, [sessionId]: true }));
+    try {
+      const res = await fetchWithAuth('/api/sessions/reconnect', {
+        method: 'POST',
+        body: JSON.stringify({ id: sessionId, sessionId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setFeedback({ type: 'success', text: data.message || `Reconnecting session "${sessionId}"...` });
+        fetchSessions();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to reconnect session.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error reconnecting session.' });
+    } finally {
+      setIsReconnectingSession(prev => ({ ...prev, [sessionId]: false }));
+    }
+  };
+
   const handleRequestSessionPairingCode = async (sessId: string, phone: string) => {
     if (!phone.trim()) {
       setFeedback({ type: 'error', text: 'Please enter a valid phone number.' });
@@ -2152,9 +2175,25 @@ export default function App() {
                           </div>
                         </div>
                       ) : (
-                        <div className="text-[10px] text-slate-500 mt-1 flex items-center justify-between">
-                          <span>Click card to configure linking credentials.</span>
-                          {isLinkSelected && <span className="text-emerald-400 font-bold animate-pulse">Selected</span>}
+                        <div className="space-y-2 mt-1">
+                          <div className="text-[10px] text-slate-500 flex items-center justify-between">
+                            <span>Click card to configure linking credentials.</span>
+                            {isLinkSelected && <span className="text-emerald-400 font-bold animate-pulse">Selected</span>}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleReconnectSession(sess.id);
+                            }}
+                            disabled={isReconnectingSession[sess.id] || sess.status === 'connecting'}
+                            className="w-full text-[10.5px] font-bold px-2.5 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 active:scale-[0.98] text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/50 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            title="Try Reconnecting to Previous Session Credentials"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isReconnectingSession[sess.id] || sess.status === 'connecting' ? 'animate-spin' : ''}`} />
+                            <span>{isReconnectingSession[sess.id] ? 'Reconnecting...' : 'Reconnect Previous Session'}</span>
+                          </button>
                         </div>
                       )}
                     </div>
@@ -2177,6 +2216,28 @@ export default function App() {
                       <span className="text-[8.5px] font-mono px-2 py-0.5 bg-slate-900 text-slate-400 border border-slate-850 rounded uppercase font-bold">
                         {linkMode} Mode
                       </span>
+                    </div>
+
+                    {/* Saved Session Credentials Quick Reconnect Callout Banner */}
+                    <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-0.5">
+                        <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                          <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Saved Session Credentials</span>
+                        </span>
+                        <p className="text-[10.5px] text-slate-300 leading-snug">
+                          Your account may still be linked on WhatsApp. Reconnect to restore the session without re-scanning.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleReconnectSession(activeSess.id)}
+                        disabled={isReconnectingSession[activeSess.id] || activeSess.status === 'connecting'}
+                        className="shrink-0 flex items-center justify-center gap-1.5 px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg transition-all cursor-pointer shadow-md disabled:opacity-50"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isReconnectingSession[activeSess.id] || activeSess.status === 'connecting' ? 'animate-spin' : ''}`} />
+                        <span>{isReconnectingSession[activeSess.id] ? 'Reconnecting...' : 'Try Reconnecting to Previous Session'}</span>
+                      </button>
                     </div>
 
                     {/* Mode selector */}

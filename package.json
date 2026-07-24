@@ -7,6 +7,7 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
+    "start:pm2": "npx pm2 start dist/server.cjs --name wa-dashboard --max-memory-restart 500M",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
