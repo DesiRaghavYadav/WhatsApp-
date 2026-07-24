@@ -1201,8 +1201,10 @@ export default function App() {
     targetGroups.forEach(g => {
       if (Array.isArray(g.participants)) {
         g.participants.forEach((pJid: string) => {
+          if (!pJid || typeof pJid !== 'string') return;
+          if (pJid.endsWith('@lid')) return; // Skip privacy LID IDs
           const phone = pJid.split('@')[0].split(':')[0];
-          if (phone && !contactsMap.has(phone)) {
+          if (phone && /^\d{7,15}$/.test(phone) && !contactsMap.has(phone)) {
             contactsMap.set(phone, {
               phone,
               name: `Group Member (${phone})`,
@@ -1343,8 +1345,12 @@ export default function App() {
       } else {
         setFeedback({ type: 'error', text: data.error || 'Failed to send message.' });
       }
-    } catch (err) {
-      setFeedback({ type: 'error', text: 'Network error. Could not connect to the API server.' });
+    } catch (err: any) {
+      console.error('Error sending message:', err);
+      setFeedback({ 
+        type: 'error', 
+        text: err?.message ? `Network error sending message: ${err.message}` : 'Network error. Could not connect to the API server.' 
+      });
     } finally {
       setIsSending(false);
     }

@@ -189,7 +189,11 @@ export default function StatusBroadcastPage({
     selectedGroupIds.forEach(gid => {
       const match = savedGroups.find(g => g.jid === gid);
       if (match && Array.isArray(match.participants)) {
-        match.participants.forEach((p: string) => uniqueParticipants.add(p));
+        match.participants.forEach((p: string) => {
+          if (typeof p === 'string' && !p.endsWith('@lid')) {
+            uniqueParticipants.add(p);
+          }
+        });
       }
     });
     setGroupMembersList(Array.from(uniqueParticipants));

@@ -301,6 +301,56 @@ interface SavedGroup {
   memberCount?: number;
 }
 
+// Clean participant list to extract valid phone numbers and remove raw privacy LID IDs or device suffixes
+function cleanParticipantJidList(participants: any[]): string[] {
+  if (!Array.isArray(participants)) return [];
+  const validJids: string[] = [];
+
+  for (const p of participants) {
+    if (!p) continue;
+    let raw = '';
+
+    if (typeof p === 'string') {
+      raw = p;
+    } else if (p.phoneNumber && typeof p.phoneNumber === 'string') {
+      raw = p.phoneNumber;
+    } else if (p.pnJid && typeof p.pnJid === 'string') {
+      raw = p.pnJid;
+    } else if (p.id && typeof p.id === 'string') {
+      raw = p.id;
+    } else if (p.jid && typeof p.jid === 'string') {
+      raw = p.jid;
+    }
+
+    if (!raw) continue;
+
+    // Reject raw WhatsApp @lid privacy IDs if no valid phone number JID is present
+    if (raw.endsWith('@lid')) {
+      if (typeof p === 'object' && p !== null) {
+        if (p.id && typeof p.id === 'string' && p.id.endsWith('@s.whatsapp.net')) {
+          raw = p.id;
+        } else if (p.phoneNumber && typeof p.phoneNumber === 'string' && p.phoneNumber.endsWith('@s.whatsapp.net')) {
+          raw = p.phoneNumber;
+        } else {
+          continue; // Skip privacy LIDs as they are non-phone identifiers
+        }
+      } else {
+        continue;
+      }
+    }
+
+    // Strip device ID suffix (e.g. 919876543210:4@s.whatsapp.net -> 919876543210)
+    const userNum = raw.split('@')[0].split(':')[0];
+
+    // Ensure userNum is strictly digits between 7 and 15 length
+    if (/^\d{7,15}$/.test(userNum)) {
+      validJids.push(`${userNum}@s.whatsapp.net`);
+    }
+  }
+
+  return Array.from(new Set(validJids));
+}
+
 function loadUserSavedGroups(username: string): SavedGroup[] {
   const filePath = path.join(getUserDir(username), 'saved_groups.json');
   try {
@@ -897,13 +947,11 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
       const metadata = await sockInstance.groupMetadata(targetJid);
       if (metadata && metadata.participants) {
         const myJid = sockInstance.user?.id ? (sockInstance.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : null;
-        mentions = metadata.participants
-          .filter((p: any) => {
-            const isMe = myJid && (p.id.split('@')[0] === myJid.split('@')[0]);
-            const isAdmin = p.admin === 'admin' || p.admin === 'superadmin';
-            return !isMe && !isAdmin;
-          })
-          .map((p: any) => p.id);
+        const cleaned = cleanParticipantJidList(metadata.participants);
+        mentions = cleaned.filter((pJid: string) => {
+          const isMe = myJid && (pJid.split('@')[0] === myJid.split('@')[0]);
+          return !isMe;
+        });
         addLog(username, `Queue: Tagged ${mentions.length} members in background for ${targetJid}`, 'info');
       }
     } catch (err: any) {
@@ -2016,7 +2064,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                   const meta = await sockInstance.groupMetadata(from);
                   groupName = meta.subject || 'Unknown Group';
                   if (meta.participants) {
-                    participants = meta.participants.map((p: any) => p.id || p.jid).filter(Boolean);
+                    participants = cleanParticipantJidList(meta.participants);
                     memberCount = participants.length;
                     const userJid = sockInstance.user?.id ? sockInstance.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net' : '';
                     if (userJid) {
@@ -2600,7 +2648,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
   // Restore all files from Firestore before starting server routes & connects
   try {
@@ -3170,12 +3219,22 @@ async function startServer() {
         const jid = g.id || g.jid;
         if (!jid) continue;
 
-        const subject = g.subject || 'Unnamed Group';
+        let meta = g;
+        try {
+          const freshMeta = await sock.groupMetadata(jid);
+          if (freshMeta && freshMeta.participants) {
+            meta = freshMeta;
+          }
+        } catch (e) {
+          // Fallback to groupFetchAllParticipating data
+        }
+
+        const subject = meta.subject || g.subject || 'Unnamed Group';
         
         let isAdmin = false;
-        if (g.participants && userJid) {
-          const selfPart = g.participants.find((p: any) => {
-            const pJid = (p.id || p.jid || '').split(':')[0].split('@')[0] + '@s.whatsapp.net';
+        if (meta.participants && userJid) {
+          const selfPart = meta.participants.find((p: any) => {
+            const pJid = (typeof p === 'string' ? p : p.id || p.jid || '').split(':')[0].split('@')[0] + '@s.whatsapp.net';
             return pJid === userJid;
           });
           if (selfPart) {
@@ -3183,19 +3242,21 @@ async function startServer() {
           }
         }
 
-        const onlyAdminsCanSend = !!g.announce;
+        const onlyAdminsCanSend = !!meta.announce;
         const canUserSend = !onlyAdminsCanSend || isAdmin;
+
+        const cleanedParticipants = cleanParticipantJidList(meta.participants || []);
 
         const groupDetails: SavedGroup = {
           jid,
           name: subject,
           savedAt: new Date().toISOString(),
           sessionId: selectedSessionId,
-          participants: g.participants ? g.participants.map((p: any) => p.id || p.jid).filter(Boolean) : [],
+          participants: cleanedParticipants,
           isAdmin,
           onlyAdminsCanSend,
           canUserSend,
-          memberCount: g.participants ? g.participants.length : 0
+          memberCount: cleanedParticipants.length
         };
 
         syncedGroups.push(groupDetails);
@@ -3664,13 +3725,11 @@ async function startServer() {
             const metadata = await sess.sock.groupMetadata(targetJid);
             if (metadata && metadata.participants) {
               const myJid = sess.sock.user?.id ? (sess.sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : null;
-              const participants = metadata.participants
-                .filter((p: any) => {
-                  const isMe = myJid && (p.id.split('@')[0] === myJid.split('@')[0]);
-                  const isAdmin = p.admin === 'admin' || p.admin === 'superadmin';
-                  return !isMe && !isAdmin;
-                })
-                .map((p: any) => p.id);
+              const cleaned = cleanParticipantJidList(metadata.participants);
+              const participants = cleaned.filter((pJid: string) => {
+                const isMe = myJid && (pJid.split('@')[0] === myJid.split('@')[0]);
+                return !isMe;
+              });
 
               if (participants.length > 0) {
                 const batchSize = 10;
@@ -4200,6 +4259,19 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Global Express Error Middleware
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error('[EXPRESS ERROR]', err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    const statusCode = err.status || err.statusCode || 500;
+    res.status(statusCode).json({
+      success: false,
+      error: err.message || 'Internal server error occurred.'
+    });
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[WA-BRIDGE] WhatsApp Web Bridge running on port ${PORT}`);
