@@ -301,50 +301,59 @@ interface SavedGroup {
   memberCount?: number;
 }
 
-// Clean participant list to extract valid phone numbers and remove raw privacy LID IDs or device suffixes
+// Clean participant list to extract valid phone numbers and retain LID fallback identifiers
 function cleanParticipantJidList(participants: any[]): string[] {
   if (!Array.isArray(participants)) return [];
   const validJids: string[] = [];
 
   for (const p of participants) {
     if (!p) continue;
-    let raw = '';
+
+    let phoneJid: string | null = null;
+    let lidJid: string | null = null;
+
+    const tryExtractPhone = (str: any): string | null => {
+      if (!str) return null;
+      const s = String(str).trim();
+      if (!s || s.endsWith('@lid')) return null;
+      const userPart = s.split('@')[0].split(':')[0];
+      if (/^\d{7,15}$/.test(userPart)) {
+        return `${userPart}@s.whatsapp.net`;
+      }
+      return null;
+    };
 
     if (typeof p === 'string') {
-      raw = p;
-    } else if (p.phoneNumber && typeof p.phoneNumber === 'string') {
-      raw = p.phoneNumber;
-    } else if (p.pnJid && typeof p.pnJid === 'string') {
-      raw = p.pnJid;
-    } else if (p.id && typeof p.id === 'string') {
-      raw = p.id;
-    } else if (p.jid && typeof p.jid === 'string') {
-      raw = p.jid;
-    }
-
-    if (!raw) continue;
-
-    // Reject raw WhatsApp @lid privacy IDs if no valid phone number JID is present
-    if (raw.endsWith('@lid')) {
-      if (typeof p === 'object' && p !== null) {
-        if (p.id && typeof p.id === 'string' && p.id.endsWith('@s.whatsapp.net')) {
-          raw = p.id;
-        } else if (p.phoneNumber && typeof p.phoneNumber === 'string' && p.phoneNumber.endsWith('@s.whatsapp.net')) {
-          raw = p.phoneNumber;
-        } else {
-          continue; // Skip privacy LIDs as they are non-phone identifiers
+      phoneJid = tryExtractPhone(p);
+      if (!phoneJid && p.includes('@lid')) {
+        const lidNum = p.split('@')[0].split(':')[0];
+        if (/^\d+$/.test(lidNum)) {
+          lidJid = `${lidNum}@lid`;
         }
-      } else {
-        continue;
+      }
+    } else if (typeof p === 'object' && p !== null) {
+      // 1. Check all potential phone number fields in order
+      phoneJid = tryExtractPhone(p.pnJid) ||
+                 tryExtractPhone(p.phoneNumber) ||
+                 tryExtractPhone(p.id) ||
+                 tryExtractPhone(p.jid);
+
+      // 2. If no phone JID, check for LID JID
+      if (!phoneJid) {
+        const rawLid = p.id || p.jid || '';
+        if (typeof rawLid === 'string' && rawLid.includes('@lid')) {
+          const lidNum = rawLid.split('@')[0].split(':')[0];
+          if (/^\d+$/.test(lidNum)) {
+            lidJid = `${lidNum}@lid`;
+          }
+        }
       }
     }
 
-    // Strip device ID suffix (e.g. 919876543210:4@s.whatsapp.net -> 919876543210)
-    const userNum = raw.split('@')[0].split(':')[0];
-
-    // Ensure userNum is strictly digits between 7 and 15 length
-    if (/^\d{7,15}$/.test(userNum)) {
-      validJids.push(`${userNum}@s.whatsapp.net`);
+    if (phoneJid) {
+      validJids.push(phoneJid);
+    } else if (lidJid) {
+      validJids.push(lidJid);
     }
   }
 
@@ -3328,13 +3337,7 @@ async function startServer() {
 
     const authFolder = path.join(process.cwd(), 'data', req.username, 'auth_info_' + targetId);
     const credsFile = path.join(authFolder, 'creds.json');
-
-    if (!fs.existsSync(credsFile)) {
-      return res.status(400).json({
-        success: false,
-        error: `No saved credentials found for session "${targetId}". Please scan QR code or request Pairing Code.`
-      });
-    }
+    const hasSavedCreds = fs.existsSync(credsFile);
 
     const userSessKey = `${req.username}:${targetId}`;
     const existingSess = sessions.get(userSessKey);
@@ -3347,7 +3350,7 @@ async function startServer() {
       existingSess.sock = null;
     }
 
-    addLog(req.username, `[SESSION: ${targetId}] Manually triggering connection re-establishment using saved credentials...`, 'info');
+    addLog(req.username, `[SESSION: ${targetId}] Re-establishing Baileys socket connection (${hasSavedCreds ? 'using saved credentials' : 'fresh session'})...`, 'info');
 
     const configs = loadUserSessionsConfig(req.username);
     const sessConfig = configs.find(c => c.id === targetId);
@@ -3355,7 +3358,7 @@ async function startServer() {
 
     try {
       await connectToWhatsApp(req.username, targetId, sessionName);
-      res.json({ success: true, message: `Reconnecting session "${targetId}" using saved credentials...` });
+      res.json({ success: true, message: `Reconnecting / restarting Baileys socket for session "${targetId}"...` });
     } catch (err: any) {
       addLog(req.username, `[SESSION: ${targetId}] Reconnect error: ${err.message}`, 'error');
       res.status(500).json({ success: false, error: err.message || 'Failed to reconnect session.' });

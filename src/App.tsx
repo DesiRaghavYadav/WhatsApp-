@@ -310,6 +310,9 @@ export default function App() {
   // Multi-Session state
   const [sessionsList, setSessionsList] = useState<any[]>([]);
   const sessionsListRef = useRef<any[]>([]);
+  const connectingStartTimesRef = useRef<Record<string, number>>({});
+  const autoReconnectingSessionsRef = useRef<Record<string, boolean>>({});
+
   useEffect(() => {
     sessionsListRef.current = sessionsList;
   }, [sessionsList]);
@@ -764,6 +767,52 @@ export default function App() {
     }
   };
 
+  const checkStuckConnectingSessions = (sessions: any[]) => {
+    if (!Array.isArray(sessions)) return;
+    const now = Date.now();
+    const STUCK_THRESHOLD_MS = 25000; // 25 seconds stuck in 'connecting'
+
+    sessions.forEach((sess: any) => {
+      const id = sess.id;
+      if (!id) return;
+
+      if (sess.status === 'connecting') {
+        if (!connectingStartTimesRef.current[id]) {
+          connectingStartTimesRef.current[id] = now;
+        } else {
+          const duration = now - connectingStartTimesRef.current[id];
+          if (duration >= STUCK_THRESHOLD_MS && !autoReconnectingSessionsRef.current[id]) {
+            autoReconnectingSessionsRef.current[id] = true;
+            console.warn(`[AUTO-RECONNECT] Session "${id}" has been stuck in 'connecting' for ${Math.round(duration / 1000)}s. Triggering automatic socket reset...`);
+
+            fetchWithAuth('/api/sessions/reconnect', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id, sessionId: id })
+            })
+              .then(async (res) => {
+                const resData = await res.json().catch(() => ({}));
+                if (res.ok && resData.success) {
+                  console.log(`[AUTO-RECONNECT] Successfully triggered Baileys socket restart for session "${id}".`);
+                }
+              })
+              .catch((err) => {
+                console.error(`[AUTO-RECONNECT] Failed to auto-reconnect session "${id}":`, err);
+              })
+              .finally(() => {
+                connectingStartTimesRef.current[id] = Date.now();
+                autoReconnectingSessionsRef.current[id] = false;
+              });
+          }
+        }
+      } else {
+        // Reset timestamp if session is connected, disconnected, or in QR state
+        delete connectingStartTimesRef.current[id];
+        delete autoReconnectingSessionsRef.current[id];
+      }
+    });
+  };
+
   const fetchSessions = async () => {
     try {
       const res = await fetchWithAuth('/api/sessions');
@@ -771,6 +820,8 @@ export default function App() {
         const data = await res.json();
         if (data.success && Array.isArray(data.sessions)) {
           setSessionsList(data.sessions);
+          checkStuckConnectingSessions(data.sessions);
+
           // Auto sync selected ids with connected sessions if state gets out of sync
           const existingIds = data.sessions.map((s: any) => s.id);
           setSelectedSessionIds(prev => {
@@ -1202,12 +1253,12 @@ export default function App() {
       if (Array.isArray(g.participants)) {
         g.participants.forEach((pJid: string) => {
           if (!pJid || typeof pJid !== 'string') return;
-          if (pJid.endsWith('@lid')) return; // Skip privacy LID IDs
-          const phone = pJid.split('@')[0].split(':')[0];
-          if (phone && /^\d{7,15}$/.test(phone) && !contactsMap.has(phone)) {
-            contactsMap.set(phone, {
-              phone,
-              name: `Group Member (${phone})`,
+          const userNum = pJid.split('@')[0].split(':')[0];
+          if (userNum && /^\d+$/.test(userNum) && !contactsMap.has(userNum)) {
+            const isLid = pJid.endsWith('@lid');
+            contactsMap.set(userNum, {
+              phone: userNum,
+              name: isLid ? `Group Member (ID: ${userNum})` : `Group Member (${userNum})`,
               groupName: g.name || 'Group'
             });
           }
