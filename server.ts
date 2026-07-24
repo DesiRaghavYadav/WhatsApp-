@@ -2579,7 +2579,16 @@ function requireAuth(req: any, res: any, next: any) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Missing authorization header.' });
   }
   const token = authHeader.replace(/^Bearer\s+/, '');
-  const username = userTokens.get(token);
+  let username = userTokens.get(token);
+
+  if (!username) {
+    const loaded = loadTokens();
+    username = loaded.get(token);
+    if (username) {
+      userTokens.set(token, username);
+    }
+  }
+
   if (!username) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Invalid or expired token.' });
   }
@@ -4167,7 +4176,20 @@ async function startServer() {
   // Serve Vite / static client files
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        watch: {
+          ignored: [
+            '**/data/**',
+            '**/logs/**',
+            '**/auth_info_*/**',
+            '**/data.json',
+            '**/tokens.json',
+            '**/users.json',
+            '**/*.log'
+          ]
+        }
+      },
       appType: 'spa'
     });
     app.use(vite.middlewares);
