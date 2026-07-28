@@ -4,12 +4,20 @@ import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
 import { createServer as createViteServer } from 'vite';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia } from '@queenanya/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, deleteDoc, collection, getDocs, getDoc, disableNetwork, setLogLevel } from 'firebase/firestore';
+import { Jimp } from 'jimp';
+import sharp from 'sharp';
+import { getLinkPreview } from 'link-preview-js';
+
+// Suppress verbose SDK internal error stream logging
+try {
+  setLogLevel('silent');
+} catch (e) {}
 
 // Keep original filesystem functions
 const originalWriteFileSync = fs.writeFileSync;
@@ -26,14 +34,34 @@ const originalPromisesRm = fs.promises ? fs.promises.rm : null;
 // Initialize Firebase
 const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
 let db: any = null;
+let isQuotaExceeded = false;
+let firestoreInitError: string | null = null;
+let firestoreDbId: string | null = null;
+
+function handleFirestoreError(context: string, err: any) {
+  const errMsg = err?.message || String(err);
+  if (errMsg.includes('RESOURCE_EXHAUSTED') || errMsg.includes('Quota limit exceeded') || err?.code === 'resource-exhausted' || err?.code === 8) {
+    if (!isQuotaExceeded) {
+      isQuotaExceeded = true;
+      console.warn('[FIREBASE] Firestore free tier daily write quota exceeded. Gracefully pausing background cloud sync for today and using local disk storage.');
+      if (db) {
+        disableNetwork(db).catch(() => {});
+      }
+    }
+  } else {
+    console.error(`[FIREBASE] ${context}:`, err);
+  }
+}
 
 if (fs.existsSync(firebaseConfigPath)) {
   try {
     const config = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
+    firestoreDbId = config.firestoreDatabaseId || null;
     const app = initializeApp(config);
     db = getFirestore(app, config.firestoreDatabaseId);
     console.log('[FIREBASE] Successfully initialized Firebase & Firestore with database:', config.firestoreDatabaseId);
-  } catch (err) {
+  } catch (err: any) {
+    firestoreInitError = err?.message || String(err);
     console.error('[FIREBASE] Error initializing Firebase:', err);
   }
 } else {
@@ -42,11 +70,20 @@ if (fs.existsSync(firebaseConfigPath)) {
 
 // Helper functions to mirror changes to Firestore database
 function syncFileToFirestore(filePath: any, data: any) {
-  if (!db) return;
+  if (!db || isQuotaExceeded) return;
   try {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep) || relativePath === 'data') {
+        const fileName = path.basename(relativePath);
+        const isAuthInfoFolder = relativePath.includes('auth_info_');
+
+        // Skip transient Baileys auth sub-key files (pre-key-*, session-*, sender-key-*, app-state-sync-*)
+        // Only mirror main creds.json and user config data files to preserve Firestore daily write quotas
+        if (isAuthInfoFolder && fileName !== 'creds.json') {
+          return;
+        }
+
         if (typeof data === 'string' || Buffer.isBuffer(data)) {
           const content = Buffer.isBuffer(data) ? data.toString('base64') : data;
           const isBinary = Buffer.isBuffer(data);
@@ -58,35 +95,42 @@ function syncFileToFirestore(filePath: any, data: any) {
             isBinary: isBinary,
             updatedAt: new Date().toISOString()
           }).catch(err => {
-            console.error('[FIREBASE] Error backing up file to Firestore:', err);
+            handleFirestoreError('Error backing up file to Firestore', err);
           });
         }
       }
     }
   } catch (err) {
-    console.error('[FIREBASE] Error in syncFileToFirestore:', err);
+    handleFirestoreError('Error in syncFileToFirestore', err);
   }
 }
 
 function syncDeleteToFirestore(filePath: any) {
-  if (!db) return;
+  if (!db || isQuotaExceeded) return;
   try {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep)) {
+        const fileName = path.basename(relativePath);
+        const isAuthInfoFolder = relativePath.includes('auth_info_');
+
+        if (isAuthInfoFolder && fileName !== 'creds.json') {
+          return;
+        }
+
         const docId = relativePath.replace(/[\/\\]/g, '___');
         deleteDoc(doc(db, 'files', docId)).catch(err => {
-          console.error('[FIREBASE] Error deleting file from Firestore:', err);
+          handleFirestoreError('Error deleting file from Firestore', err);
         });
       }
     }
   } catch (err) {
-    console.error('[FIREBASE] Error in syncDeleteToFirestore:', err);
+    handleFirestoreError('Error in syncDeleteToFirestore', err);
   }
 }
 
 function syncDirDeleteToFirestore(filePath: any) {
-  if (!db) return;
+  if (!db || isQuotaExceeded) return;
   try {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
@@ -104,12 +148,12 @@ function syncDirDeleteToFirestore(filePath: any) {
             }
           });
         }).catch(err => {
-          console.error('[FIREBASE] Error cleaning up directory child docs from Firestore:', err);
+          handleFirestoreError('Error cleaning up directory child docs from Firestore', err);
         });
       }
     }
   } catch (err) {
-    console.error('[FIREBASE] Error in syncDirDeleteToFirestore:', err);
+    handleFirestoreError('Error in syncDirDeleteToFirestore', err);
   }
 }
 
@@ -204,9 +248,64 @@ if (fs.promises) {
   }
 }
 
+async function restoreUsersFromFirestore() {
+  if (!db || isQuotaExceeded) return;
+  try {
+    const snapshot = await getDocs(collection(db, 'users'));
+    if (!snapshot.empty) {
+      const existingUsers = loadUsers();
+      const userMap = new Map<string, User>();
+      for (const u of existingUsers) {
+        userMap.set(u.username, u);
+      }
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data && data.username && data.passwordHash) {
+          userMap.set(data.username, {
+            username: data.username,
+            passwordHash: data.passwordHash,
+            createdAt: data.createdAt
+          });
+        }
+      });
+      const mergedUsers = Array.from(userMap.values());
+      originalWriteFileSync.call(fs, usersFilePath, JSON.stringify(mergedUsers, null, 2), 'utf8');
+      console.log(`[FIREBASE] Restored ${mergedUsers.length} user account credentials from Firestore 'users' collection.`);
+    }
+  } catch (err) {
+    handleFirestoreError('Error restoring users from Firestore', err);
+  }
+}
+
+async function restoreTokensFromFirestore() {
+  if (!db || isQuotaExceeded) return;
+  try {
+    const docSnap = await getDoc(doc(db, 'app_data', 'auth_tokens'));
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      if (data && typeof data === 'object') {
+        const currentTokens = loadTokens();
+        for (const [k, v] of Object.entries(data)) {
+          if (typeof k === 'string' && typeof v === 'string') {
+            currentTokens.set(k, v);
+          }
+        }
+        const obj: Record<string, string> = {};
+        for (const [token, username] of currentTokens.entries()) {
+          obj[token] = username;
+        }
+        originalWriteFileSync.call(fs, tokensFilePath, JSON.stringify(obj, null, 2), 'utf8');
+        console.log(`[FIREBASE] Restored ${currentTokens.size} auth tokens from Firestore 'app_data'.`);
+      }
+    }
+  } catch (err) {
+    handleFirestoreError('Error restoring tokens from Firestore', err);
+  }
+}
+
 async function restoreAllFilesFromFirestore() {
-  if (!db) {
-    console.log('[FIREBASE] Cannot restore: Firestore database is not initialized.');
+  if (!db || isQuotaExceeded) {
+    console.log('[FIREBASE] Cannot restore: Firestore database is not initialized or quota exceeded.');
     return;
   }
   try {
@@ -236,8 +335,12 @@ async function restoreAllFilesFromFirestore() {
       }
     });
     console.log(`[FIREBASE] Successfully restored ${restoredCount} files from Firestore.`);
-  } catch (err) {
-    console.error('[FIREBASE] Error restoring files from Firestore:', err);
+
+    // Restore dedicated user accounts & auth tokens collections
+    await restoreUsersFromFirestore();
+    await restoreTokensFromFirestore();
+  } catch (err: any) {
+    handleFirestoreError('Error restoring files from Firestore', err);
   }
 }
 
@@ -271,6 +374,18 @@ function loadUsers(): User[] {
 function saveUsers(users: User[]) {
   try {
     fs.writeFileSync(usersFilePath, JSON.stringify(users, null, 2), 'utf8');
+    if (db && !isQuotaExceeded) {
+      for (const u of users) {
+        setDoc(doc(db, 'users', u.username), {
+          username: u.username,
+          passwordHash: u.passwordHash,
+          createdAt: u.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }).catch(err => {
+          handleFirestoreError('Error saving user credential to Firestore', err);
+        });
+      }
+    }
   } catch (err) {
     console.error('Error saving users:', err);
   }
@@ -575,6 +690,7 @@ interface QueueItem {
   addedAt: string;
   sentAt?: string;
   error?: string;
+  retryCount?: number;
   workflowName?: string;
   tagGroupMembers?: boolean;
   batchMentions?: string[];
@@ -708,21 +824,13 @@ async function processUserQueue(username: string) {
       const sentMessages = loadUserSentMessages(username);
 
       if (!session || session.status !== 'connected' || !session.sock) {
-        item.status = 'failed';
-        item.error = `Session "${item.sessionId}" is not connected`;
+        // Do not prematurely fail pending items if session is reconnecting or temporarily offline.
+        // Revert status to 'pending' so it automatically sends when session reconnects.
+        item.status = 'pending';
         saveUserQueue(username, queue);
-        addLog(username, `Queue item ${item.id} failed: ${item.error}`, 'error');
-
-        sentMessages.push({
-          id: item.id,
-          phoneNumber: item.recipient.split('@')[0],
-          message: item.message || '[Media/Interactive Content]',
-          timestamp: new Date().toISOString(),
-          status: 'failed',
-          error: item.error
-        });
-        saveUserSentMessages(username, sentMessages);
-        continue;
+        const currentSessStatus = session ? session.status : 'disconnected';
+        addLog(username, `Queue: Session "${item.sessionId}" is currently ${currentSessStatus}. Pausing queue and waiting for WhatsApp connection...`, 'info');
+        break; // Stop loop and await socket connection/reconnection
       }
 
       try {
@@ -734,6 +842,7 @@ async function processUserQueue(username: string) {
         if (freshIdx > -1) {
           freshQueue[freshIdx].status = 'sent';
           freshQueue[freshIdx].sentAt = new Date().toISOString();
+          freshQueue[freshIdx].retryCount = 0;
           saveUserQueue(username, freshQueue);
         }
 
@@ -756,23 +865,38 @@ async function processUserQueue(username: string) {
       } catch (err: any) {
         const freshQueue = loadUserQueue(username);
         const freshIdx = freshQueue.findIndex(i => i.id === item.id);
+        const errMsg = err?.message || 'Unknown error';
+        const isConnError = /connection closed|conflict|stream errored|websocket|socket|closed|timed out|reset|epipe|econnreset|session/i.test(errMsg);
+        const currentRetry = (item.retryCount || 0) + 1;
+
         if (freshIdx > -1) {
-          freshQueue[freshIdx].status = 'failed';
-          freshQueue[freshIdx].error = err.message || 'Unknown error';
-          saveUserQueue(username, freshQueue);
+          if (isConnError && currentRetry <= 3) {
+            freshQueue[freshIdx].status = 'pending';
+            freshQueue[freshIdx].retryCount = currentRetry;
+            freshQueue[freshIdx].error = `Transient disconnect (${errMsg}). Retry ${currentRetry}/3 pending...`;
+            saveUserQueue(username, freshQueue);
+
+            addLog(username, `Queue: Item ${item.id} hit temporary connection drop (${errMsg}). Re-queued for retry (${currentRetry}/3) when socket reconnects...`, 'info');
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            break; // Pause queue processing loop to let connection re-establish
+          } else {
+            freshQueue[freshIdx].status = 'failed';
+            freshQueue[freshIdx].error = errMsg;
+            saveUserQueue(username, freshQueue);
+
+            addLog(username, `Queue: Item ${item.id} failed for ${item.recipient}: ${errMsg}`, 'error');
+
+            sentMessages.push({
+              id: item.id,
+              phoneNumber: item.recipient.split('@')[0],
+              message: item.message || '[Interactive Content]',
+              timestamp: new Date().toISOString(),
+              status: 'failed',
+              error: errMsg
+            });
+            saveUserSentMessages(username, sentMessages);
+          }
         }
-
-        addLog(username, `Queue: Item ${item.id} failed for ${item.recipient}: ${err.message}`, 'error');
-
-        sentMessages.push({
-          id: item.id,
-          phoneNumber: item.recipient.split('@')[0],
-          message: item.message || '[Interactive Content]',
-          timestamp: new Date().toISOString(),
-          status: 'failed',
-          error: err.message
-        });
-        saveUserSentMessages(username, sentMessages);
       }
 
       const checkQueue = loadUserQueue(username);
@@ -928,6 +1052,31 @@ async function getCachedUploadMedia(attachmentData: string, attachmentName: stri
   return cachedFilePath;
 }
 
+// Simulates human typing behavior by sending 'composing' presence before dispatching messages
+async function simulateHumanTyping(sockInstance: any, targetJid: string, text?: string) {
+  if (!sockInstance || !targetJid) return;
+  // Do not send presence updates for broadcast recipients
+  if (targetJid === 'status@broadcast') return;
+
+  try {
+    // 1. Send composing presence update to recipient
+    await sockInstance.sendPresenceUpdate('composing', targetJid);
+
+    // Calculate natural human typing duration based on message length (1.2s - 3.5s)
+    let delayMs = 1500;
+    if (text && typeof text === 'string' && text.length > 0) {
+      delayMs = Math.min(3500, Math.max(1200, Math.floor(text.length * 25)));
+    }
+
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+
+    // 2. Pause presence update before releasing payload
+    await sockInstance.sendPresenceUpdate('paused', targetJid);
+  } catch (err: any) {
+    // Non-fatal: if presence update fails due to temporary socket latency, proceed with message dispatch
+  }
+}
+
 async function sendMessageDirectly(sockInstance: any, item: QueueItem, username: string) {
   const {
     recipient,
@@ -969,6 +1118,9 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
   }
 
   try {
+    // Simulate human typing presence before dispatching message payload
+    await simulateHumanTyping(sockInstance, targetJid, message);
+
     let fileRef: any = null;
     if (attachmentType && attachmentType !== 'none') {
       if (attachmentData) {
@@ -991,6 +1143,7 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
 
     const hasAttachment = !!fileRef;
     let mediaObject: any = null;
+    let sendOptions: any = {};
 
     if (hasAttachment && inlineAttachment && messageType !== 'text') {
       try {
@@ -1166,22 +1319,31 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
         }
       } else {
         const preview = await getLinkPreviewData(message);
+        sendOptions = {};
         if (preview) {
+          addLog(username, `🔗 Link Preview generated for "${preview.canonicalUrl}". Meta Title: "${preview.title}", Meta Image attached: ${preview.jpegThumbnail ? 'YES (' + preview.jpegThumbnail.length + ' bytes)' : 'NO'}`, 'success');
           payload = {
-            extendedTextMessage: {
-              text: message,
-              matchedText: preview.matchedText,
+            text: message,
+            linkPreview: {
+              'canonical-url': preview.canonicalUrl,
               canonicalUrl: preview.canonicalUrl,
+              'matched-text': preview.matchedText,
+              matchedText: preview.matchedText,
               title: preview.title,
               description: preview.description,
               jpegThumbnail: preview.jpegThumbnail
             }
           };
           if (mentions.length > 0) {
-            payload.extendedTextMessage.contextInfo = {
-              mentionedJid: mentions
-            };
+            payload.mentions = mentions;
           }
+          sendOptions.getUrlInfo = async () => ({
+            'canonical-url': preview.canonicalUrl,
+            'matched-text': preview.matchedText,
+            title: preview.title,
+            description: preview.description,
+            jpegThumbnail: preview.jpegThumbnail
+          });
         } else {
           payload = { text: message };
           if (mentions.length > 0) {
@@ -1191,14 +1353,22 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
       }
 
       if (isInteractive) {
-        const msg = generateWAMessageFromContent(
-          targetJid,
-          payload,
-          { userJid: sockInstance.user?.id }
-        );
-        await sockInstance.relayMessage(targetJid, msg.message, { messageId: msg.key.id });
+        try {
+          const msg = generateWAMessageFromContent(
+            targetJid,
+            payload,
+            { userJid: sockInstance.user?.id }
+          );
+          await sockInstance.relayMessage(targetJid, msg.message, { messageId: msg.key.id });
+        } catch (relayErr: any) {
+          console.warn(`[SEND] Relay message failed for interactive message, falling back to simple send: ${relayErr.message}`);
+          await sockInstance.sendMessage(targetJid, {
+            text: message,
+            ...(mentions.length > 0 ? { mentions } : {})
+          });
+        }
       } else {
-        await sockInstance.sendMessage(targetJid, payload);
+        await sockInstance.sendMessage(targetJid, payload, sendOptions);
       }
     }
   } finally {
@@ -1578,6 +1748,9 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
     const buttons = rule.buttons || [];
     const templateButtons = rule.templateButtons || [];
 
+    // Simulate human typing indicator before dispatching automation response
+    await simulateHumanTyping(sock, targetJid, message);
+
     let fileRef: any = null;
     const hasAttachment = attachmentType !== 'none' && !!attachmentUrl;
     if (hasAttachment) {
@@ -1650,6 +1823,8 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
         hasMediaAttachment: false
       };
 
+      let sendOptions: any = {};
+
       if (msgType === 'buttons' && Array.isArray(buttons) && buttons.length > 0) {
         isInteractive = true;
         payload = {
@@ -1716,18 +1891,48 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
           }
         };
       } else {
-        payload = { text: message };
+        const preview = await getLinkPreviewData(message);
+        sendOptions = {};
+        if (preview) {
+          addLog(username, `🔗 Auto-Bot Link Preview generated for "${preview.canonicalUrl}". Meta Title: "${preview.title}", Meta Image attached: ${preview.jpegThumbnail ? 'YES (' + preview.jpegThumbnail.length + ' bytes)' : 'NO'}`, 'success');
+          payload = {
+            text: message,
+            linkPreview: {
+              'canonical-url': preview.canonicalUrl,
+              canonicalUrl: preview.canonicalUrl,
+              'matched-text': preview.matchedText,
+              matchedText: preview.matchedText,
+              title: preview.title,
+              description: preview.description,
+              jpegThumbnail: preview.jpegThumbnail
+            }
+          };
+          sendOptions.getUrlInfo = async () => ({
+            'canonical-url': preview.canonicalUrl,
+            'matched-text': preview.matchedText,
+            title: preview.title,
+            description: preview.description,
+            jpegThumbnail: preview.jpegThumbnail
+          });
+        } else {
+          payload = { text: message };
+        }
       }
 
       if (isInteractive) {
-        const msg = generateWAMessageFromContent(
-          targetJid,
-          payload,
-          { userJid: sock.user?.id }
-        );
-        await sock.relayMessage(targetJid, msg.message, { messageId: msg.key.id });
+        try {
+          const msg = generateWAMessageFromContent(
+            targetJid,
+            payload,
+            { userJid: sock.user?.id }
+          );
+          await sock.relayMessage(targetJid, msg.message, { messageId: msg.key.id });
+        } catch (relayErr: any) {
+          console.warn(`[AUTO-BOT] Relay message failed for interactive message, falling back to simple send: ${relayErr.message}`);
+          await sock.sendMessage(targetJid, { text: message });
+        }
       } else {
-        await sock.sendMessage(targetJid, payload);
+        await sock.sendMessage(targetJid, payload, sendOptions);
       }
     }
 
@@ -1753,8 +1958,39 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
   }
 }
 
+const reconnectTimers = new Map<string, NodeJS.Timeout>();
+const connectingLocks = new Map<string, number>();
+
+function scheduleSessionReconnect(username: string, id: string, name?: string, delayMs = 5000) {
+  const userSessKey = `${username}:${id}`;
+  if (reconnectTimers.has(userSessKey)) {
+    clearTimeout(reconnectTimers.get(userSessKey)!);
+    reconnectTimers.delete(userSessKey);
+  }
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(userSessKey);
+    connectToWhatsApp(username, id, name);
+  }, delayMs);
+  reconnectTimers.set(userSessKey, timer);
+}
+
 async function connectToWhatsApp(username: string, id: string, name?: string) {
   const userSessKey = `${username}:${id}`;
+
+  // Clear any existing reconnect timer for this session
+  if (reconnectTimers.has(userSessKey)) {
+    clearTimeout(reconnectTimers.get(userSessKey)!);
+    reconnectTimers.delete(userSessKey);
+  }
+
+  // Prevent concurrent socket spawning if connection attempt started less than 12s ago
+  const lastConnectingTime = connectingLocks.get(userSessKey) || 0;
+  const existingSess = sessions.get(userSessKey);
+  if (Date.now() - lastConnectingTime < 12000 && existingSess?.status === 'connecting') {
+    addLog(username, `[SESSION: ${id}] Connection handshake already in progress. Skipping duplicate call.`, 'info');
+    return;
+  }
+  connectingLocks.set(userSessKey, Date.now());
 
   // Ensure we initialize session state in map
   if (!sessions.has(userSessKey)) {
@@ -1772,10 +2008,13 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
   const session = sessions.get(userSessKey)!;
 
-  // Cleanly close and remove listeners from existing socket before creating a new socket instance
+  // Cleanly close and unbind listeners from existing socket before creating a new instance
   if (session.sock) {
     try {
       session.sock.ev.removeAllListeners();
+      if (session.sock.ws) {
+        try { session.sock.ws.close(); } catch (e) {}
+      }
       session.sock.end(undefined);
     } catch (e) {}
     session.sock = null;
@@ -1836,19 +2075,23 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               fs.rmSync(authFolder, { recursive: true, force: true });
             }
           } catch (e: any) {}
-          setTimeout(() => connectToWhatsApp(username, id, name), 2000);
+          scheduleSessionReconnect(username, id, name, 2000);
         } else {
           const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
           if (isQrTimeout) {
             addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing...`, 'info');
-            setTimeout(() => connectToWhatsApp(username, id, name), 5000);
+            scheduleSessionReconnect(username, id, name, 5000);
           } else {
-            addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
-            
-            // Reconnect the socket instance cleanly in-memory instead of exiting the entire Node process.
-            // This prevents server downtime and avoids breaking other users' dashboards.
-            addLog(username, `[SESSION: ${id}] Recreating socket and performing clean reconnect in 5 seconds...`, 'info');
-            setTimeout(() => connectToWhatsApp(username, id, name), 5000);
+            const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || errMessage.toLowerCase().includes('conflict');
+            if (isConflict) {
+              addLog(username, `[SESSION: ${id}] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" in UI when ready.`, 'info');
+              session.status = 'disconnected';
+              session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect to resume.';
+            } else {
+              addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
+              addLog(username, `[SESSION: ${id}] Performing clean socket reconnect in 5 seconds...`, 'info');
+              scheduleSessionReconnect(username, id, name, 5000);
+            }
           }
         }
       } else if (connection === 'open') {
@@ -1862,6 +2105,9 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         };
 
         addLog(username, `[SESSION: ${id}] WhatsApp connected! JID: ${session.user.id} (${session.user.name})`, 'success');
+
+        // Resume queue processing immediately upon successful socket connection
+        processUserQueue(username).catch(() => {});
       }
     });
 
@@ -1912,6 +2158,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               addLog(username, `📥 [SHARE] Captured shared message from ${from}. Preview: "${newShare.displayText}"`, 'success');
               
               // Send confirmation reply back
+              await simulateHumanTyping(sockInstance, from, newShare.displayText);
               await sockInstance.sendMessage(from, { text: `✅ *Captured shared message!*\n\n"${newShare.displayText}"\n\nIt is now available in your dashboard panel to forward to any group.` }, { quoted: msg });
             } catch (err: any) {
               console.error('[SHARE] Error capturing shared message:', err);
@@ -2214,6 +2461,11 @@ function saveTokens(map: Map<string, string>) {
       obj[token] = username;
     }
     fs.writeFileSync(tokensFilePath, JSON.stringify(obj, null, 2), 'utf8');
+    if (db && !isQuotaExceeded) {
+      setDoc(doc(db, 'app_data', 'auth_tokens'), obj).catch(err => {
+        handleFirestoreError('Error backing up auth tokens to Firestore', err);
+      });
+    }
   } catch (err) {
     console.error('Error saving tokens:', err);
   }
@@ -2243,80 +2495,207 @@ setInterval(() => {
   runNetworkCheck().catch(() => {});
 }, 30000);
 
+function decodeHtmlEntities(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#039;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .trim();
+}
+
+async function processImageToJpegThumbnail(rawInput: Buffer | string, pageUrl?: string): Promise<Buffer | undefined> {
+  try {
+    let rawBuf: Buffer;
+    if (typeof rawInput === 'string') {
+      const imgRes = await fetch(rawInput, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'image/avif,image/webp,image/apng,image/jpeg,image/png,image/*,*/*;q=0.8',
+          'Referer': pageUrl || 'https://google.com'
+        },
+        redirect: 'follow'
+      });
+      if (!imgRes.ok) return undefined;
+      rawBuf = Buffer.from(await imgRes.arrayBuffer());
+    } else {
+      rawBuf = rawInput;
+    }
+
+    if (!rawBuf || rawBuf.length === 0) return undefined;
+
+    const pipeline = sharp(rawBuf);
+    const meta = await pipeline.metadata();
+    if (!meta.width || !meta.height) return undefined;
+
+    const origW = meta.width;
+    const origH = meta.height;
+    const aspect = origW / origH;
+
+    // WhatsApp Large Hero Card display requirements:
+    // 1. Width: 720px (large physical dimensions)
+    // 2. Aspect Ratio: 16:9 (720x405) to trigger full-width hero banner layout
+    // 3. Compression: Low JPEG quality (~45-50) so payload byte size remains tiny (~14-20KB)
+    let resizer: any;
+    if (aspect < 1.25) {
+      // Force 16:9 aspect ratio crop (720x405) for square/portrait images to guarantee large card display
+      resizer = sharp(rawBuf).resize(720, 405, { fit: 'cover' });
+    } else {
+      // Natural landscape image: resize to 720px width preserving aspect ratio (e.g. 720x405)
+      resizer = sharp(rawBuf).resize({
+        width: 720,
+        fit: 'inside',
+        withoutEnlargement: true
+      });
+    }
+
+    if (meta.hasAlpha) {
+      resizer = resizer.flatten({ background: '#ffffff' });
+    }
+
+    let quality = 50;
+    let jpegBuf = await resizer.jpeg({ quality, mozjpeg: true }).toBuffer();
+
+    // Keep payload strictly under 28KB for WhatsApp protobuf safety
+    while (jpegBuf.length > 28000 && quality > 15) {
+      quality -= 5;
+      jpegBuf = await resizer.jpeg({ quality, mozjpeg: true }).toBuffer();
+    }
+
+    return jpegBuf;
+  } catch (err: any) {
+    console.warn('[LINK-PREVIEW] Sharp processing warning:', err?.message || err);
+    return undefined;
+  }
+}
+
 async function getLinkPreviewData(text: string) {
   const urlRegex = /(https?:\/\/[^\s]+)/i;
   const match = text.match(urlRegex);
   if (!match) return null;
-  const url = match[0];
+  
+  // Clean up trailing punctuation from URL
+  let url = match[0].replace(/[.,;!?)]+$/, '');
+
   try {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-      },
-      signal: controller.signal
-    });
-    clearTimeout(id);
-    if (!res.ok) return null;
-    const html = await res.text();
-    
     let title = '';
-    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    if (titleMatch) {
-      title = titleMatch[1].trim();
-    }
-    const ogTitleMatch = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([\s\S]*?)["']/i) ||
-                         html.match(/<meta[^>]*content=["']([\s\S]*?)["'][^>]*property=["']og:title["']/i);
-    if (ogTitleMatch) {
-      title = ogTitleMatch[1].trim();
-    }
-
     let description = '';
-    const descMatch = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([\s\S]*?)["']/i) ||
-                      html.match(/<meta[^>]*content=["']([\s\S]*?)["'][^>]*name=["']description["']/i);
-    if (descMatch) {
-      description = descMatch[1].trim();
-    }
-    const ogDescMatch = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([\s\S]*?)["']/i) ||
-                        html.match(/<meta[^>]*content=["']([\s\S]*?)["'][^>]*property=["']og:description["']/i);
-    if (ogDescMatch) {
-      description = ogDescMatch[1].trim();
-    }
-
     let imageUrl = '';
-    const ogImageMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([\s\S]*?)["']/i) ||
-                         html.match(/<meta[^>]*content=["']([\s\S]*?)["'][^>]*property=["']og:image["']/i);
-    if (ogImageMatch) {
-      imageUrl = ogImageMatch[1].trim();
+
+    // 1. Direct HTML Meta Scraper
+    try {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 6000);
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        },
+        redirect: 'follow',
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      if (res.ok) {
+        const html = await res.text();
+
+        // Title extraction
+        const ogTitle = html.match(/<meta[^>]*?(?:property|name)=["']?(?:og|twitter):title["']?[^>]*?content=["']([\s\S]*?)["']/i) ||
+                        html.match(/<meta[^>]*?content=["']([\s\S]*?)["'][^>]*?(?:property|name)=["']?(?:og|twitter):title["']?/i);
+        if (ogTitle) {
+          title = ogTitle[1];
+        } else {
+          const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+          if (titleMatch) title = titleMatch[1];
+        }
+
+        // Description extraction
+        const ogDesc = html.match(/<meta[^>]*?(?:property|name)=["']?(?:og|twitter):description["']?[^>]*?content=["']([\s\S]*?)["']/i) ||
+                       html.match(/<meta[^>]*?content=["']([\s\S]*?)["'][^>]*?(?:property|name)=["']?(?:og|twitter):description["']?/i) ||
+                       html.match(/<meta[^>]*?name=["']?description["']?[^>]*?content=["']([\s\S]*?)["']/i) ||
+                       html.match(/<meta[^>]*?content=["']([\s\S]*?)["'][^>]*?name=["']?description["']?/i);
+        if (ogDesc) {
+          description = ogDesc[1];
+        }
+
+        // Image extraction
+        const ogImg = html.match(/<meta[^>]*?(?:property|name)=["']?(?:og:image|og:image:url|og:image:secure_url|twitter:image|twitter:image:src)["']?[^>]*?content=["']([\s\S]*?)["']/i) ||
+                      html.match(/<meta[^>]*?content=["']([\s\S]*?)["'][^>]*?(?:property|name)=["']?(?:og:image|og:image:url|og:image:secure_url|twitter:image|twitter:image:src)["']?/i) ||
+                      html.match(/<link[^>]*?rel=["']?(?:image_src|shortcut icon|icon)["']?[^>]*?href=["']([\s\S]*?)["']/i);
+        if (ogImg) {
+          imageUrl = ogImg[1].trim();
+        }
+      }
+    } catch (e) {}
+
+    title = decodeHtmlEntities(title);
+    description = decodeHtmlEntities(description);
+    if (imageUrl) imageUrl = decodeHtmlEntities(imageUrl);
+
+    // 2. Fallback to Baileys getUrlInfo or link-preview-js if details missing
+    if (!title || !imageUrl) {
+      try {
+        const waInfo = await getUrlInfo(url, { thumbnailWidth: 600, fetchOpts: { timeout: 5000 } });
+        if (waInfo) {
+          if (!title && waInfo.title) title = waInfo.title;
+          if (!description && waInfo.description) description = waInfo.description;
+          if (!imageUrl && waInfo.originalThumbnailUrl) imageUrl = waInfo.originalThumbnailUrl;
+          if (!imageUrl && waInfo.jpegThumbnail) {
+            const raw = Buffer.isBuffer(waInfo.jpegThumbnail) ? waInfo.jpegThumbnail : Buffer.from(waInfo.jpegThumbnail);
+            if (raw.length > 0) {
+              const processed = await processImageToJpegThumbnail(raw, url);
+              if (processed) return {
+                title: title || waInfo.title || 'Link Preview',
+                description: description || waInfo.description || url,
+                canonicalUrl: waInfo['canonical-url'] || url,
+                matchedText: waInfo['matched-text'] || url,
+                jpegThumbnail: processed
+              };
+            }
+          }
+        }
+      } catch (waErr) {}
+
+      if (!title || !imageUrl) {
+        try {
+          const lpData: any = await getLinkPreview(url, { timeout: 5000 });
+          if (lpData) {
+            if (!title && lpData.title) title = lpData.title;
+            if (!description && lpData.description) description = lpData.description;
+            if (!imageUrl && lpData.images && lpData.images.length > 0) imageUrl = lpData.images[0];
+            if (!imageUrl && lpData.favicons && lpData.favicons.length > 0) imageUrl = lpData.favicons[0];
+          }
+        } catch (lpErr) {}
+      }
     }
 
-    if (imageUrl && !imageUrl.startsWith('http')) {
-      try {
-        const parsed = new URL(url);
-        imageUrl = new URL(imageUrl, parsed.origin).href;
-      } catch (e) {}
+    // Resolve relative/scheme-less image URLs
+    if (imageUrl) {
+      if (imageUrl.startsWith('//')) {
+        imageUrl = 'https:' + imageUrl;
+      } else if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+        try {
+          imageUrl = new URL(imageUrl, url).href;
+        } catch (e) {}
+      }
     }
 
     let jpegThumbnail: Buffer | undefined = undefined;
+
     if (imageUrl) {
+      jpegThumbnail = await processImageToJpegThumbnail(imageUrl, url);
+    }
+
+    // Domain Favicon Fallback if no thumbnail image was generated
+    if (!jpegThumbnail) {
       try {
-        const imgController = new AbortController();
-        const imgId = setTimeout(() => imgController.abort(), 3000);
-        const imgRes = await fetch(imageUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-          },
-          signal: imgController.signal
-        });
-        clearTimeout(imgId);
-        if (imgRes.ok) {
-          const ab = await imgRes.arrayBuffer();
-          jpegThumbnail = Buffer.from(ab);
-        }
-      } catch (e) {
-        console.error('Failed to fetch link preview thumbnail image:', e);
-      }
+        const domain = new URL(url).hostname;
+        const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=256`;
+        jpegThumbnail = await processImageToJpegThumbnail(faviconUrl, url);
+      } catch (favErr) {}
     }
 
     return {
@@ -2324,10 +2703,11 @@ async function getLinkPreviewData(text: string) {
       description: description || url,
       canonicalUrl: url,
       matchedText: url,
+      imageUrl,
       jpegThumbnail
     };
-  } catch (err) {
-    console.error('Failed to get link preview for', url, err);
+  } catch (err: any) {
+    console.error('[LINK-PREVIEW] Failed to get link preview for', url, err?.message || err);
     return null;
   }
 }
@@ -2390,42 +2770,13 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
       };
 
       if (statusType === 'text') {
-        const preview = await getLinkPreviewData(text);
+        payload = { text: text };
         if (backgroundColor) {
           const cleanHex = backgroundColor.replace('#', '');
           const argb = parseInt('FF' + cleanHex, 16);
           const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
-          payload = {
-            extendedTextMessage: {
-              text: text,
-              backgroundArgb: backgroundArgb,
-              font: font || 1,
-              ...(preview ? {
-                matchedText: preview.matchedText,
-                canonicalUrl: preview.canonicalUrl,
-                title: preview.title,
-                description: preview.description,
-                jpegThumbnail: preview.jpegThumbnail
-              } : {})
-            }
-          };
-        } else {
-          if (preview) {
-            payload = {
-              extendedTextMessage: {
-                text: text,
-                matchedText: preview.matchedText,
-                canonicalUrl: preview.canonicalUrl,
-                title: preview.title,
-                description: preview.description,
-                jpegThumbnail: preview.jpegThumbnail
-              }
-            };
-          } else {
-            payload = {
-              text: text
-            };
-          }
+          payload.backgroundArgb = backgroundArgb;
+          payload.font = font || 1;
         }
       } else if (statusType === 'image' && fileRef) {
         payload = {
@@ -2680,6 +3031,47 @@ async function startServer() {
     console.error('Error starting initial user sessions:', err);
   });
 
+function getFirestoreStatusPayload() {
+  let status: 'connected' | 'quota_exceeded' | 'failed' | 'not_configured' = 'not_configured';
+  let message = 'Firestore config not detected. Operating in local server disk storage mode.';
+  let details = '';
+
+  if (fs.existsSync(firebaseConfigPath)) {
+    if (firestoreInitError) {
+      status = 'failed';
+      message = 'Firestore initialization failed. Fallback to local server disk storage.';
+      details = firestoreInitError;
+    } else if (isQuotaExceeded) {
+      status = 'quota_exceeded';
+      message = 'Firestore free daily write quota exceeded. Background cloud sync paused; local disk storage fully active.';
+      details = 'Daily free write limit reached for database ' + (firestoreDbId || 'default') + '. Data is safe on disk.';
+    } else if (db) {
+      status = 'connected';
+      message = 'Firestore database connected and actively syncing user session backups.';
+      details = `Database ID: ${firestoreDbId || 'default'}`;
+    } else {
+      status = 'failed';
+      message = 'Firestore instance not active.';
+    }
+  }
+
+  return {
+    success: true,
+    status,
+    connected: status === 'connected',
+    isQuotaExceeded,
+    databaseId: firestoreDbId,
+    message,
+    details,
+    timestamp: new Date().toISOString()
+  };
+}
+
+  // Public Firestore status endpoint
+  app.get('/api/public/firestore-status', (req, res) => {
+    res.json(getFirestoreStatusPayload());
+  });
+
   // Public server resources endpoint (no authentication needed)
   app.get('/api/public/server-resources', (req, res) => {
     try {
@@ -2809,6 +3201,34 @@ async function startServer() {
 
   app.get('/api/auth/me', requireAuth, (req: any, res) => {
     res.json({ success: true, username: req.username });
+  });
+
+  // Link Preview Fetcher API
+  app.post('/api/fetch-link-preview', requireAuth, async (req: any, res) => {
+    try {
+      const { text, url } = req.body;
+      const inputStr = url || text || '';
+      if (!inputStr) {
+        return res.status(400).json({ success: false, error: 'URL or text is required.' });
+      }
+      const preview = await getLinkPreviewData(inputStr);
+      if (!preview) {
+        return res.json({ success: false, error: 'Could not fetch link preview for this link.' });
+      }
+      res.json({
+        success: true,
+        preview: {
+          title: preview.title,
+          description: preview.description,
+          canonicalUrl: preview.canonicalUrl,
+          matchedText: preview.matchedText,
+          imageUrl: preview.imageUrl || null,
+          thumbnailBase64: preview.jpegThumbnail ? `data:image/jpeg;base64,${preview.jpegThumbnail.toString('base64')}` : null
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   // Workflows Automation API
@@ -3021,6 +3441,7 @@ async function startServer() {
         };
         
         // Forward message natively using Baileys { forward: ... } option
+        await simulateHumanTyping(sess.sock, formattedJid, share.displayText);
         await sess.sock.sendMessage(formattedJid, { forward: originalMessage });
         
         results.push({ jid: formattedJid, success: true });
@@ -3874,42 +4295,13 @@ async function startServer() {
         };
 
         if (statusType === 'text') {
-          const preview = await getLinkPreviewData(text);
+          payload = { text: text };
           if (backgroundColor) {
             const cleanHex = backgroundColor.replace('#', '');
             const argb = parseInt('FF' + cleanHex, 16);
             const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
-            payload = {
-              extendedTextMessage: {
-                text: text,
-                backgroundArgb: backgroundArgb,
-                font: font || 1,
-                ...(preview ? {
-                  matchedText: preview.matchedText,
-                  canonicalUrl: preview.canonicalUrl,
-                  title: preview.title,
-                  description: preview.description,
-                  jpegThumbnail: preview.jpegThumbnail
-                } : {})
-              }
-            };
-          } else {
-            if (preview) {
-              payload = {
-                extendedTextMessage: {
-                  text: text,
-                  matchedText: preview.matchedText,
-                  canonicalUrl: preview.canonicalUrl,
-                  title: preview.title,
-                  description: preview.description,
-                  jpegThumbnail: preview.jpegThumbnail
-                }
-              };
-            } else {
-              payload = {
-                text: text
-              };
-            }
+            payload.backgroundArgb = backgroundArgb;
+            payload.font = font || 1;
           }
         } else if (statusType === 'image' && fileRef) {
           payload = {

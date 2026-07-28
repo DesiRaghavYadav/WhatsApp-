@@ -1,602 +1,602 @@
 [
   {
-    "id": "oalzcp",
-    "timestamp": "2026-07-15T18:29:23.612Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "rvtnmq",
+    "timestamp": "2026-07-26T23:19:14.232Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 387MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "bad7vg",
-    "timestamp": "2026-07-15T18:29:43.627Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "mdvnh4",
+    "timestamp": "2026-07-26T23:24:14.233Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 387MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "yisbbs",
-    "timestamp": "2026-07-15T18:30:03.640Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "32k9rl",
+    "timestamp": "2026-07-26T23:29:14.233Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 387MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "v8uavp",
-    "timestamp": "2026-07-15T18:30:23.651Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "k45rux",
+    "timestamp": "2026-07-26T23:34:14.234Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 387MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "2hjd6bu",
-    "timestamp": "2026-07-15T18:30:43.960Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "rhourd",
+    "timestamp": "2026-07-26T23:39:14.236Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 387MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "68ewhr",
-    "timestamp": "2026-07-15T18:30:48.980Z",
+    "id": "tbv0q",
+    "timestamp": "2026-07-26T23:44:14.235Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 387MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "tvlef",
+    "timestamp": "2026-07-26T23:49:14.235Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "8qc9sg",
+    "timestamp": "2026-07-26T23:54:14.236Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "cto7zc",
+    "timestamp": "2026-07-26T23:59:14.237Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "nu2g45",
+    "timestamp": "2026-07-27T00:04:14.238Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (917MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "p9610a",
+    "timestamp": "2026-07-27T00:09:14.238Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "z8wqrl",
+    "timestamp": "2026-07-27T00:14:14.239Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "bgzxmf",
+    "timestamp": "2026-07-27T00:19:14.238Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "149dne",
+    "timestamp": "2026-07-27T00:24:14.239Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "z6f46r",
+    "timestamp": "2026-07-27T00:29:14.239Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "r7k0sp",
+    "timestamp": "2026-07-27T00:34:14.239Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "7n0mzq",
+    "timestamp": "2026-07-27T00:39:14.241Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "z1bh1u",
+    "timestamp": "2026-07-27T00:44:14.241Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "y696wv",
+    "timestamp": "2026-07-27T00:49:14.241Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "2hz8rg",
+    "timestamp": "2026-07-27T00:54:14.242Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "2qzb5",
+    "timestamp": "2026-07-27T00:59:14.243Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "bvrwx",
+    "timestamp": "2026-07-27T01:04:14.243Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "8afl1s",
+    "timestamp": "2026-07-27T01:09:14.243Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "x40v3k",
+    "timestamp": "2026-07-27T01:14:14.245Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "ibv1ne",
+    "timestamp": "2026-07-27T01:19:14.245Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "uybgg",
+    "timestamp": "2026-07-27T01:24:14.245Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "546eoc",
+    "timestamp": "2026-07-27T01:29:14.246Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "e4kz5l",
+    "timestamp": "2026-07-27T01:34:14.247Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "u1x9dx",
+    "timestamp": "2026-07-27T01:39:14.248Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "y3gm2",
+    "timestamp": "2026-07-27T01:44:14.248Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "ovvsfi",
+    "timestamp": "2026-07-27T01:49:14.250Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "5d0ee",
+    "timestamp": "2026-07-27T01:54:14.250Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "q2d85s",
+    "timestamp": "2026-07-27T01:59:14.251Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "0qa8c",
+    "timestamp": "2026-07-27T02:04:14.252Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (918MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "0z77k",
+    "timestamp": "2026-07-27T02:09:14.253Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "gwglj8",
+    "timestamp": "2026-07-27T02:14:14.254Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 388MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "wicgy",
+    "timestamp": "2026-07-27T02:19:14.255Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 389MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "mi5kli",
+    "timestamp": "2026-07-27T02:24:14.256Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 389MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "hvvzka",
+    "timestamp": "2026-07-27T02:29:14.255Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 389MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "wrho27",
+    "timestamp": "2026-07-27T02:34:14.257Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 389MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "3j9euy",
+    "timestamp": "2026-07-27T02:39:14.258Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (919MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "f31m2",
+    "timestamp": "2026-07-27T02:44:14.259Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "79l29",
+    "timestamp": "2026-07-27T02:49:14.260Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "awwd4t",
+    "timestamp": "2026-07-27T02:54:14.260Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "t782iw",
+    "timestamp": "2026-07-27T02:59:14.261Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "pkfbjn",
+    "timestamp": "2026-07-27T03:04:14.262Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "q3jzxd",
+    "timestamp": "2026-07-27T03:09:14.263Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "r3ky5",
+    "timestamp": "2026-07-27T03:14:14.263Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "qodbv",
+    "timestamp": "2026-07-27T03:19:14.264Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "yvqcj9",
+    "timestamp": "2026-07-27T03:24:14.265Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "9n2pd",
+    "timestamp": "2026-07-27T03:29:14.266Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "44hduo",
+    "timestamp": "2026-07-27T03:34:14.266Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "2tiblf",
+    "timestamp": "2026-07-27T03:39:14.267Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "p5zgk",
+    "timestamp": "2026-07-27T03:44:14.268Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "8qnmvq",
+    "timestamp": "2026-07-27T03:49:14.268Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "ews1co",
+    "timestamp": "2026-07-27T03:54:14.269Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "hte9nf",
+    "timestamp": "2026-07-27T03:59:14.271Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "avdyuu",
+    "timestamp": "2026-07-27T04:04:14.272Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "rqx3u",
+    "timestamp": "2026-07-27T04:09:14.274Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "bxf9s",
+    "timestamp": "2026-07-27T04:14:14.274Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "vmk8z",
+    "timestamp": "2026-07-27T04:19:14.274Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 390MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "j38kbw",
+    "timestamp": "2026-07-27T04:24:14.274Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "qu3z8o",
+    "timestamp": "2026-07-27T04:29:14.275Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "wshc3g",
+    "timestamp": "2026-07-27T04:34:14.274Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (920MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "rci40v",
+    "timestamp": "2026-07-27T04:39:14.274Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "1rerih",
+    "timestamp": "2026-07-27T04:44:14.275Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "0zjmae",
+    "timestamp": "2026-07-27T04:49:14.276Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "x4v3w",
+    "timestamp": "2026-07-27T04:54:14.277Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "37fih6",
+    "timestamp": "2026-07-27T04:59:14.278Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "78csxc",
+    "timestamp": "2026-07-27T05:04:14.279Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "hsz0n",
+    "timestamp": "2026-07-27T05:09:14.278Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "f78k2",
+    "timestamp": "2026-07-27T05:14:14.278Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "fqm4j3",
+    "timestamp": "2026-07-27T05:19:14.279Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "pgb7yq",
+    "timestamp": "2026-07-27T05:24:14.280Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "ijz86",
+    "timestamp": "2026-07-27T05:29:14.281Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "381yv",
+    "timestamp": "2026-07-27T05:34:14.281Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "73b6x",
+    "timestamp": "2026-07-27T05:39:14.282Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "mugki5",
+    "timestamp": "2026-07-27T05:44:14.282Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "0hy704",
+    "timestamp": "2026-07-27T05:49:14.283Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "av4zle",
+    "timestamp": "2026-07-27T05:54:14.283Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "7hupi9",
+    "timestamp": "2026-07-27T05:59:14.284Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (921MB / 4096MB), Node Process RSS: 391MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "hogpx",
+    "timestamp": "2026-07-27T06:04:14.284Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "m26zr",
+    "timestamp": "2026-07-27T06:09:14.285Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "y0zpo4",
+    "timestamp": "2026-07-27T06:14:14.286Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "5f6l64",
+    "timestamp": "2026-07-27T06:19:14.287Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "cq9rpd",
+    "timestamp": "2026-07-27T06:24:14.288Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "mdg29t",
+    "timestamp": "2026-07-27T06:29:14.289Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "bppzell",
+    "timestamp": "2026-07-27T06:34:14.290Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "0pnwbn",
+    "timestamp": "2026-07-27T06:39:14.290Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "fxhizl",
+    "timestamp": "2026-07-27T06:44:14.291Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "rrzdqkb",
+    "timestamp": "2026-07-27T06:49:14.292Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "z6w0jw",
+    "timestamp": "2026-07-27T06:54:14.291Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "rleash",
+    "timestamp": "2026-07-27T06:59:14.293Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (922MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "kg5u9g",
+    "timestamp": "2026-07-27T07:04:14.294Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (906MB / 4096MB), Node Process RSS: 376MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "zzwzce",
+    "timestamp": "2026-07-27T07:09:14.295Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 22% (907MB / 4096MB), Node Process RSS: 377MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "pufe4d",
+    "timestamp": "2026-07-27T13:10:06.485Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "6m4fks",
-    "timestamp": "2026-07-15T18:30:49.799Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "pycvqm",
-    "timestamp": "2026-07-15T18:31:49.816Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "5a9se",
-    "timestamp": "2026-07-15T18:32:09.826Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "h1246i",
-    "timestamp": "2026-07-15T18:32:29.836Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "y8j0la",
-    "timestamp": "2026-07-15T18:32:49.846Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "pe1oy",
-    "timestamp": "2026-07-15T18:33:09.869Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "i0g4h7",
-    "timestamp": "2026-07-15T18:33:30.174Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "fdlqa",
-    "timestamp": "2026-07-15T18:33:35.193Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "lzyrl9",
-    "timestamp": "2026-07-15T18:33:35.953Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "nhfyg",
-    "timestamp": "2026-07-15T18:34:35.965Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "9xknzm",
-    "timestamp": "2026-07-15T18:34:55.973Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "ph7acg",
-    "timestamp": "2026-07-15T18:35:15.988Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "ipdey7m",
-    "timestamp": "2026-07-15T18:35:35.999Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "vtimrs",
-    "timestamp": "2026-07-15T18:35:56.010Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "93cdkc",
-    "timestamp": "2026-07-15T18:36:16.321Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "11d1ec",
-    "timestamp": "2026-07-15T18:36:21.339Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "6ue2a7",
-    "timestamp": "2026-07-15T18:36:22.177Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "rp7gkp",
-    "timestamp": "2026-07-15T18:37:22.187Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "we0cpy",
-    "timestamp": "2026-07-15T18:37:42.198Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "vuilb",
-    "timestamp": "2026-07-15T18:38:02.212Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "8hen1v",
-    "timestamp": "2026-07-15T18:38:22.223Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "ounjua",
-    "timestamp": "2026-07-15T18:38:42.241Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "c7losl",
-    "timestamp": "2026-07-15T18:39:02.561Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "7ftulh",
-    "timestamp": "2026-07-15T18:39:07.577Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "97vql",
-    "timestamp": "2026-07-15T18:39:08.377Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "zrhi7",
-    "timestamp": "2026-07-15T18:40:08.378Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "m6bs66",
-    "timestamp": "2026-07-15T18:40:28.386Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "lru1sb",
-    "timestamp": "2026-07-15T18:40:48.396Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "vzmxdw",
-    "timestamp": "2026-07-15T18:41:08.407Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "tn0tuc",
-    "timestamp": "2026-07-15T18:41:28.430Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "b9v2st",
-    "timestamp": "2026-07-15T18:41:48.741Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "9ogj7b",
-    "timestamp": "2026-07-15T18:41:53.759Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "r8tkim",
-    "timestamp": "2026-07-15T18:41:54.718Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "otn7a6",
-    "timestamp": "2026-07-16T12:55:02.124Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "unza2",
-    "timestamp": "2026-07-16T12:55:02.127Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "svf78k",
-    "timestamp": "2026-07-16T12:55:12.219Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "z2fx1",
-    "timestamp": "2026-07-16T12:55:12.221Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "ecmh8x",
-    "timestamp": "2026-07-16T12:55:22.235Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "rcw8bt",
-    "timestamp": "2026-07-16T12:55:22.319Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "hkp3a",
-    "timestamp": "2026-07-16T12:55:32.328Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "lbz7n",
-    "timestamp": "2026-07-16T12:55:32.330Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "rgst7",
-    "timestamp": "2026-07-16T12:55:42.338Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "2yu84g",
-    "timestamp": "2026-07-16T12:55:42.340Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "hq6kbc",
-    "timestamp": "2026-07-16T12:55:52.350Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "ug06dd",
-    "timestamp": "2026-07-16T12:55:52.352Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "owk7nb",
-    "timestamp": "2026-07-16T12:56:02.361Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "p45fe",
-    "timestamp": "2026-07-16T12:56:02.362Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "uoek0q",
-    "timestamp": "2026-07-16T12:56:04.381Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "inj07i",
-    "timestamp": "2026-07-16T12:56:04.476Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "fb6xxf",
-    "timestamp": "2026-07-16T12:56:14.579Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "jkgfb8",
-    "timestamp": "2026-07-16T12:56:14.581Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "m9kzys",
-    "timestamp": "2026-07-16T12:56:24.592Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "l48oq6",
-    "timestamp": "2026-07-16T12:56:24.676Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "1ekfa",
-    "timestamp": "2026-07-16T12:56:34.686Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "dxf6ms",
-    "timestamp": "2026-07-16T12:56:34.687Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "htrrzo",
-    "timestamp": "2026-07-16T12:56:44.698Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "0r892",
-    "timestamp": "2026-07-16T12:56:44.700Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "f7cxj5",
-    "timestamp": "2026-07-16T12:56:54.709Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "th3ube",
-    "timestamp": "2026-07-16T12:56:54.711Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "bv0kbq",
-    "timestamp": "2026-07-16T12:57:04.720Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "913xv",
-    "timestamp": "2026-07-16T12:57:04.721Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "1cwq49",
-    "timestamp": "2026-07-16T12:57:14.736Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "usjrsu",
-    "timestamp": "2026-07-16T12:57:14.740Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "mu6wy",
-    "timestamp": "2026-07-16T12:57:24.753Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "iajbh",
-    "timestamp": "2026-07-16T12:57:24.754Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "1z5krf",
-    "timestamp": "2026-07-16T12:57:34.768Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "eurtva",
-    "timestamp": "2026-07-16T12:57:34.770Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "5udvfx",
-    "timestamp": "2026-07-16T12:57:44.875Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "b1nshg",
-    "timestamp": "2026-07-16T12:57:44.877Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "849fet",
-    "timestamp": "2026-07-16T12:57:54.888Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "j79cav",
-    "timestamp": "2026-07-16T12:57:54.891Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "r5cl32",
-    "timestamp": "2026-07-16T12:58:04.904Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "nxe1dw",
-    "timestamp": "2026-07-16T12:58:04.906Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "eyfbei",
-    "timestamp": "2026-07-16T12:58:14.915Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "kf3ubf",
-    "timestamp": "2026-07-16T12:58:14.956Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "0i16s",
-    "timestamp": "2026-07-16T12:58:25.000Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "1rr1fd",
-    "timestamp": "2026-07-16T12:58:25.151Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "zdxps",
-    "timestamp": "2026-07-16T12:58:35.166Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "6i7vxd",
-    "timestamp": "2026-07-16T12:58:35.168Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "r41lu",
-    "timestamp": "2026-07-16T12:58:45.179Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "mxv30w",
-    "timestamp": "2026-07-16T12:58:45.183Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "msiqkb",
-    "timestamp": "2026-07-16T12:58:55.192Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "tmpeos",
-    "timestamp": "2026-07-16T12:58:55.194Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "styh17e",
-    "timestamp": "2026-07-16T12:59:05.205Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "qtz05",
-    "timestamp": "2026-07-16T12:59:05.208Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "uocdg",
-    "timestamp": "2026-07-16T12:59:15.216Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "4wam8t",
-    "timestamp": "2026-07-16T12:59:15.218Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "1fu3l8",
-    "timestamp": "2026-07-16T12:59:25.235Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "4q251",
-    "timestamp": "2026-07-16T12:59:25.240Z",
-    "message": "[SESSION: primary] Connection error: (0 , import_baileys.default) is not a function",
-    "type": "error"
-  },
-  {
-    "id": "snwsxg",
-    "timestamp": "2026-07-16T12:59:30.457Z",
-    "message": "[SESSION: primary] Starting WhatsApp connection...",
-    "type": "info"
-  },
-  {
-    "id": "7db9km",
-    "timestamp": "2026-07-16T12:59:31.977Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
+    "id": "1613w",
+    "timestamp": "2026-07-27T13:10:09.847Z",
+    "message": "[SESSION: primary] WhatsApp connected! JID: 916388994337:4@s.whatsapp.net (video)",
+    "type": "success"
   },
   {
-    "id": "56jx1",
-    "timestamp": "2026-07-16T13:00:31.978Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "8jpdt75",
+    "timestamp": "2026-07-27T13:10:15.964Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 39% (1592MB / 4096MB), Node Process RSS: 531MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "zinn3t",
-    "timestamp": "2026-07-16T13:00:52.006Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "4q44d",
+    "timestamp": "2026-07-27T13:11:32.075Z",
+    "message": "[SESSION: primary] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click \"Reconnect\" in UI when ready.",
     "type": "info"
   },
   {
-    "id": "33pg8c",
-    "timestamp": "2026-07-16T13:01:12.030Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "auwvbo",
+    "timestamp": "2026-07-27T13:15:05.942Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 28% (1138MB / 4096MB), Node Process RSS: 392MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   }
 ]

@@ -6,6 +6,7 @@ import LeadsHubPage from './components/LeadsHubPage';
 import SharesManagerPage from './components/SharesManagerPage';
 import StatusBroadcastPage from './components/StatusBroadcastPage';
 import { QueueManagerPage } from './components/QueueManagerPage';
+import { FirestoreStatusCard } from './components/FirestoreStatusCard';
 import { 
   Send, 
   QrCode, 
@@ -97,6 +98,15 @@ interface SentMessage {
   timestamp: string;
   status: 'sent' | 'failed';
   error?: string;
+}
+
+interface LiveLinkPreview {
+  title: string;
+  description: string;
+  canonicalUrl: string;
+  matchedText: string;
+  imageUrl?: string;
+  thumbnailBase64?: string;
 }
 
 interface QuickTemplate {
@@ -354,6 +364,53 @@ export default function App() {
   const [scheduledAt, setScheduledAt] = useState<string>('');
   const [isTemplatePreviewOpen, setIsTemplatePreviewOpen] = useState<boolean>(false);
   const [previewLogs, setPreviewLogs] = useState<string[]>([]);
+
+  // Live Auto Link Preview States
+  const [liveLinkPreview, setLiveLinkPreview] = useState<LiveLinkPreview | null>(null);
+  const [isLoadingLinkPreview, setIsLoadingLinkPreview] = useState<boolean>(false);
+  const [dismissedLinkUrl, setDismissedLinkUrl] = useState<string>('');
+
+  useEffect(() => {
+    const urlRegex = /(https?:\/\/[^\s]+)/i;
+    const match = message.match(urlRegex);
+    if (!match) {
+      setLiveLinkPreview(null);
+      return;
+    }
+
+    const detectedUrl = match[0].replace(/[.,;!?)]+$/, '');
+
+    if (dismissedLinkUrl === detectedUrl) {
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsLoadingLinkPreview(true);
+      try {
+        const activeToken = token || localStorage.getItem('wa_auth_token');
+        const res = await fetch('/api/fetch-link-preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${activeToken}`
+          },
+          body: JSON.stringify({ url: detectedUrl })
+        });
+        const data = await res.json();
+        if (data.success && data.preview) {
+          setLiveLinkPreview(data.preview);
+        } else {
+          setLiveLinkPreview(null);
+        }
+      } catch (err) {
+        console.error('Failed to fetch link preview:', err);
+      } finally {
+        setIsLoadingLinkPreview(false);
+      }
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [message, dismissedLinkUrl, token]);
 
   // Advanced Message Type State
   const [msgType, setMsgType] = useState<'navi-template' | 'text' | 'buttons' | 'template'>('navi-template');
@@ -1647,6 +1704,9 @@ export default function App() {
                 {isLoginMode ? "Don't have an account? Sign Up" : 'Already have an account? Sign In'}
               </button>
             </div>
+
+            {/* Firestore Status Card for Sign In screen */}
+            <FirestoreStatusCard variant="signin" />
 
             {/* Server Resources Display */}
             {serverResources && (
@@ -3153,18 +3213,75 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="space-y-1.5">
-                        <label htmlFor="msg-input" className="text-xs font-bold text-slate-300 uppercase tracking-wide">
-                          Message Body
-                        </label>
+                        <div className="flex items-center justify-between">
+                          <label htmlFor="msg-input" className="text-xs font-bold text-slate-300 uppercase tracking-wide">
+                            Message Body
+                          </label>
+                          {isLoadingLinkPreview && (
+                            <div className="flex items-center gap-1.5 text-xs text-emerald-400 animate-pulse">
+                              <RefreshCw className="w-3 h-3 animate-spin" />
+                              <span className="font-mono text-[11px]">Generating link preview...</span>
+                            </div>
+                          )}
+                        </div>
                         <textarea
                           id="msg-input"
                           required
                           rows={3}
-                          placeholder="Type your main text notification body here..."
+                          placeholder="Type your main text notification body or paste link here..."
                           value={message}
                           onChange={(e) => setMessage(e.target.value)}
                           className="w-full bg-slate-950/80 border border-slate-850 hover:border-slate-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 outline-none transition-colors resize-none"
                         />
+
+                        {/* WhatsApp Web Style Automatic Live Link Preview Card */}
+                        {liveLinkPreview && (
+                          <div className="relative mt-2 p-3 bg-slate-900/95 border border-emerald-500/35 rounded-xl overflow-hidden shadow-2xl space-y-2 group">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDismissedLinkUrl(liveLinkPreview.canonicalUrl);
+                                setLiveLinkPreview(null);
+                              }}
+                              className="absolute top-2 right-2 z-10 p-1.5 bg-slate-950/80 hover:bg-red-500 text-slate-400 hover:text-white rounded-full transition-colors cursor-pointer border border-slate-800"
+                              title="Dismiss link preview"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+
+                            <div className="flex flex-col sm:flex-row gap-3 items-start">
+                              {(liveLinkPreview.thumbnailBase64 || liveLinkPreview.imageUrl) && (
+                                <div className="w-full sm:w-48 h-32 shrink-0 rounded-lg overflow-hidden bg-slate-950 border border-slate-800 relative">
+                                  <img
+                                    src={liveLinkPreview.thumbnailBase64 || liveLinkPreview.imageUrl}
+                                    alt="Link Preview"
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <span className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/80 text-[8.5px] text-emerald-400 font-mono rounded border border-emerald-500/20">
+                                    Hero Card (16:9)
+                                  </span>
+                                </div>
+                              )}
+                              <div className="flex-1 space-y-1 pr-6">
+                                <div className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-400 font-semibold uppercase tracking-wider">
+                                  <Globe className="w-3 h-3 text-emerald-400" />
+                                  <span>{liveLinkPreview.canonicalUrl.replace(/^https?:\/\//i, '').split('/')[0]}</span>
+                                </div>
+                                <h4 className="text-sm font-bold text-white leading-snug line-clamp-2">
+                                  {liveLinkPreview.title}
+                                </h4>
+                                <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
+                                  {liveLinkPreview.description}
+                                </p>
+                                <div className="pt-1 flex items-center gap-2">
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-300 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                                    <Check className="w-3 h-3 text-emerald-400" /> WhatsApp Link Card attached automatically
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -3698,6 +3815,30 @@ export default function App() {
                             animate={{ scale: 1, opacity: 1, y: 0 }}
                             className="bg-[#0b141a] border border-[#202c33] rounded-lg text-slate-100 max-w-[95%] self-end relative break-words shadow-lg overflow-hidden flex flex-col"
                           >
+                            {/* Hero Link Preview Banner Card */}
+                            {liveLinkPreview && (
+                              <div className="bg-[#111b21] border-b border-[#202c33] overflow-hidden">
+                                {(liveLinkPreview.thumbnailBase64 || liveLinkPreview.imageUrl) && (
+                                  <img
+                                    src={liveLinkPreview.thumbnailBase64 || liveLinkPreview.imageUrl}
+                                    alt="Link Preview"
+                                    className="w-full h-32 object-cover"
+                                  />
+                                )}
+                                <div className="p-2 space-y-0.5">
+                                  <div className="text-[9px] font-bold text-slate-100 line-clamp-1">
+                                    {liveLinkPreview.title}
+                                  </div>
+                                  <div className="text-[8px] text-slate-400 line-clamp-2 leading-tight">
+                                    {liveLinkPreview.description}
+                                  </div>
+                                  <div className="text-[7.5px] font-mono text-emerald-400 uppercase tracking-wider pt-0.5">
+                                    {liveLinkPreview.canonicalUrl.replace(/^https?:\/\//i, '').split('/')[0]}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                             {/* Message Body Content */}
                             <div className="p-2 text-[10px] leading-relaxed whitespace-pre-wrap text-left select-text">
                               {msgType === 'navi-template' 
@@ -3824,6 +3965,9 @@ export default function App() {
               {/* History Tab */}
               {activeTab === 'history' && (
                 <div id="panel-history" className="space-y-4">
+                  {/* Firestore Connection Status Banner on Message Sent Screen */}
+                  <FirestoreStatusCard variant="full" title="Message Logs & Firestore Backup Status" />
+
                   {sentHistory.length === 0 ? (
                     <div className="text-center py-10">
                       <div className="inline-flex bg-slate-950 p-4 rounded-full text-slate-700 border border-slate-850 mb-3">

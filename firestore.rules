@@ -6,9 +6,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Allow read/write to the 'files' collection for our server-side sync mechanism
+    // Allow read/write to 'files', 'users', and 'app_data' collections for server-side persistence
     match /files/{fileId} {
+      allow read, write: if true;
+    }
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+    match /app_data/{docId} {
       allow read, write: if true;
     }
   }
 }
+
