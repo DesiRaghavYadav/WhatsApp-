@@ -14,6 +14,24 @@ import { Jimp } from 'jimp';
 import sharp from 'sharp';
 import { getLinkPreview } from 'link-preview-js';
 
+const serverStartTime = Date.now();
+
+function getUptimeFormatted(startTime: number): string {
+  const totalSeconds = Math.floor((Date.now() - startTime) / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  parts.push(`${seconds}s`);
+
+  return parts.join(' ');
+}
+
 // Suppress verbose SDK internal error stream logging
 try {
   setLogLevel('silent');
@@ -815,6 +833,16 @@ async function processUserQueue(username: string) {
       }
 
       const item = queue[pendingIndex];
+
+      // Check if recipient is in global banned/blocked group list
+      if (isJidBlocked(item.recipient)) {
+        item.status = 'failed';
+        item.error = 'Banned: Target group/recipient is in global blocked/banned list.';
+        saveUserQueue(username, queue);
+        addLog(username, `🚫 Queue Item ${item.id} skipped: ${item.recipient} is in global banned group list.`, 'info');
+        continue;
+      }
+
       item.status = 'sending';
       saveUserQueue(username, queue);
       addLog(username, `Queue: Processing item ${item.id} for ${item.recipient} (Session: ${item.sessionId})...`, 'info');
@@ -1581,29 +1609,355 @@ function saveUserLists(username: string, lists: any[]) {
   }
 }
 
-function loadUserSettings(username: string): { secretPrefix: string; disableTextProcessing: boolean } {
+// Global Blocked/Banned Group IDs Persistence
+function getGlobalBlockedGroupsFilePath(): string {
+  return path.join(process.cwd(), 'global_blocked_groups.json');
+}
+
+function loadGlobalBlockedGroups(): string[] {
+  try {
+    const filePath = getGlobalBlockedGroupsFilePath();
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (Array.isArray(data)) {
+        return data.map(id => String(id).trim()).filter(Boolean);
+      }
+    }
+  } catch (err) {}
+  return [];
+}
+
+function saveGlobalBlockedGroups(ids: string[]): string[] {
+  const clean = Array.from(new Set(ids.map(id => String(id).trim()).filter(Boolean)));
+  try {
+    fs.writeFileSync(getGlobalBlockedGroupsFilePath(), JSON.stringify(clean, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to save global blocked groups:', err);
+  }
+  return clean;
+}
+
+function isJidBlocked(jid: string): boolean {
+  if (!jid) return false;
+  const blockedList = loadGlobalBlockedGroups();
+  if (blockedList.length === 0) return false;
+
+  const rawClean = jid.trim().toLowerCase();
+  const phoneOrGroupId = rawClean.split('@')[0];
+
+  for (const blockedItem of blockedList) {
+    const cleanBlocked = blockedItem.trim().toLowerCase();
+    const blockedPhoneOrGroupId = cleanBlocked.split('@')[0];
+
+    if (rawClean === cleanBlocked || 
+        phoneOrGroupId === blockedPhoneOrGroupId ||
+        (cleanBlocked.length > 3 && rawClean.includes(cleanBlocked))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Reusable Permanent Saved 4-Digit Codes Data Structure & Helper
+export interface SavedCode {
+  id: string;
+  code: string; // clean 4 numeric digits e.g. "1234"
+  message: string;
+  phoneNumber: string; // recipient numbers or group JIDs or status@broadcast
+  recipientType: 'group' | 'individual' | 'bulk' | 'status';
+  delaySeconds: number;
+  tagGroupMembers?: boolean;
+  sessionIds?: string[];
+  msgType?: string;
+  footer?: string;
+  attachmentType?: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentData?: string;
+  inlineAttachment?: boolean;
+  isStatus?: boolean;
+  statusType?: 'text' | 'image' | 'video';
+  backgroundColor?: string;
+  font?: number;
+  statusJidList?: string[];
+  mentions?: string[];
+  createdAt: string;
+}
+
+function getUserSavedCodesFilePath(username: string): string {
+  return path.join(getUserDir(username), 'saved_codes.json');
+}
+
+function loadUserSavedCodes(username: string): SavedCode[] {
+  try {
+    const filePath = getUserSavedCodesFilePath(username);
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (Array.isArray(data)) {
+        return data;
+      }
+    }
+  } catch (err) {}
+  return [];
+}
+
+function saveUserSavedCodes(username: string, codes: SavedCode[]): SavedCode[] {
+  try {
+    fs.writeFileSync(getUserSavedCodesFilePath(username), JSON.stringify(codes, null, 2), 'utf8');
+  } catch (err) {
+    console.error(`Failed to save saved codes for user ${username}:`, err);
+  }
+  return codes;
+}
+
+async function executeSavedCode(
+  username: string,
+  savedCode: SavedCode,
+  triggerSource: string,
+  sockInstance?: any,
+  replyJid?: string,
+  triggerMsg?: any
+): Promise<{ success: boolean; enqueuedCount: number; error?: string }> {
+  try {
+    // Determine connected sessions for user
+    const userPrefix = `${username}:`;
+    const connectedSessions: string[] = [];
+    for (const [key, sess] of sessions.entries()) {
+      if (key.startsWith(userPrefix) && sess.status === 'connected') {
+        const sid = key.split(':')[1];
+        connectedSessions.push(sid);
+      }
+    }
+
+    const preferredSessions = (savedCode.sessionIds && savedCode.sessionIds.length > 0)
+      ? savedCode.sessionIds.filter(s => connectedSessions.includes(s))
+      : connectedSessions;
+
+    const validSessions = preferredSessions.length > 0 ? preferredSessions : connectedSessions;
+
+    if (validSessions.length === 0) {
+      const errMsg = 'No connected WhatsApp sessions available to execute saved code.';
+      addLog(username, `❌ Saved Code .${savedCode.code} failed: ${errMsg}`, 'error');
+      if (sockInstance && replyJid) {
+        await sockInstance.sendMessage(replyJid, { text: `❌ *.${savedCode.code} Failed:* ${errMsg}` }, triggerMsg ? { quoted: triggerMsg } : {});
+      }
+      return { success: false, enqueuedCount: 0, error: errMsg };
+    }
+
+    // Handle STATUS STORIES Execution
+    if (savedCode.isStatus || savedCode.recipientType === 'status') {
+      let publishedCount = 0;
+      const sType = savedCode.statusType || (savedCode.attachmentType === 'image' ? 'image' : savedCode.attachmentType === 'video' ? 'video' : 'text');
+
+      for (const sid of validSessions) {
+        const userSessKey = `${username}:${sid}`;
+        const session = sessions.get(userSessKey);
+        if (!session || !session.sock || session.status !== 'connected') continue;
+
+        try {
+          let payload: any = {};
+          const options: any = {};
+          if (savedCode.statusJidList && savedCode.statusJidList.length > 0) {
+            options.statusJidList = savedCode.statusJidList;
+          }
+
+          if (sType === 'text') {
+            payload = { text: savedCode.message || '' };
+            if (savedCode.backgroundColor) {
+              const cleanHex = savedCode.backgroundColor.replace('#', '');
+              const argb = parseInt('FF' + cleanHex, 16);
+              const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
+              payload.backgroundArgb = backgroundArgb;
+              payload.font = savedCode.font || 1;
+            }
+          } else {
+            let fileRef: any = null;
+            if (savedCode.attachmentData) {
+              const localCachedPath = await getCachedUploadMedia(savedCode.attachmentData, savedCode.attachmentName || 'status', username);
+              fileRef = { url: localCachedPath };
+            } else if (savedCode.attachmentUrl) {
+              const localCachedPath = await getCachedMediaUrl(savedCode.attachmentUrl, username);
+              fileRef = { url: localCachedPath };
+            }
+            if (sType === 'image' && fileRef) {
+              payload = { image: fileRef, caption: savedCode.message || '' };
+            } else if (sType === 'video' && fileRef) {
+              payload = { video: fileRef, caption: savedCode.message || '' };
+            }
+          }
+
+          if (savedCode.mentions && savedCode.mentions.length > 0) {
+            const limitMentions = savedCode.mentions.slice(0, 5);
+            payload.contextInfo = { mentionedJid: limitMentions };
+          }
+
+          await session.sock.sendMessage('status@broadcast', payload, options);
+          publishedCount++;
+          addLog(username, `✅ Published Status Story via Code .${savedCode.code} on "${session.name}"`, 'success');
+        } catch (statusErr: any) {
+          console.error(`Error publishing status via code on session ${sid}:`, statusErr);
+          addLog(username, `❌ Failed to publish status via code on "${session.name}": ${statusErr.message}`, 'error');
+        }
+      }
+
+      if (sockInstance && replyJid) {
+        await sockInstance.sendMessage(
+          replyJid,
+          {
+            text: `🚀 *.${savedCode.code} Status Broadcast Published!* ✅\n\n` +
+                  `📸 *Status Type:* ${sType}\n` +
+                  `📝 *Content:* ${savedCode.message ? (savedCode.message.substring(0, 60) + (savedCode.message.length > 60 ? '...' : '')) : '(Media Story)'}\n` +
+                  `📱 *Accounts Published:* ${publishedCount} connected instance(s)\n\n` +
+                  `WhatsApp Status update broadcasted successfully!`
+          },
+          triggerMsg ? { quoted: triggerMsg } : {}
+        );
+      }
+
+      return { success: publishedCount > 0, enqueuedCount: publishedCount };
+    }
+
+    // Split recipients for standard chat messages
+    const rawRecipients = (savedCode.phoneNumber || '')
+      .split(/[\n,]/)
+      .map(r => r.trim())
+      .filter(Boolean);
+
+    if (rawRecipients.length === 0) {
+      const errMsg = 'Saved code has no recipient numbers or group IDs configured.';
+      addLog(username, `❌ Saved Code .${savedCode.code} failed: ${errMsg}`, 'error');
+      if (sockInstance && replyJid) {
+        await sockInstance.sendMessage(replyJid, { text: `❌ *.${savedCode.code} Failed:* ${errMsg}` }, triggerMsg ? { quoted: triggerMsg } : {});
+      }
+      return { success: false, enqueuedCount: 0, error: errMsg };
+    }
+
+    let enqueuedCount = 0;
+    let skippedBanned = 0;
+
+    for (let i = 0; i < rawRecipients.length; i++) {
+      const recipient = rawRecipients[i];
+      const assignedSessionId = getAssignedSessionIdForRecipient(
+        username,
+        recipient,
+        savedCode.recipientType || 'group',
+        validSessions[i % validSessions.length],
+        validSessions
+      );
+
+      let targetJid = recipient;
+      if (savedCode.recipientType === 'group') {
+        if (!targetJid.includes('@')) {
+          targetJid = `${targetJid}@g.us`;
+        }
+      } else {
+        const cleanNumber = recipient.replace(/\D/g, '');
+        if (cleanNumber) {
+          targetJid = `${cleanNumber}@s.whatsapp.net`;
+        }
+      }
+
+      if (isJidBlocked(targetJid)) {
+        skippedBanned++;
+        addLog(username, `🚫 Saved Code .${savedCode.code}: Skipped ${targetJid} (Banned globally)`, 'info');
+        continue;
+      }
+
+      pushToUserQueue(username, {
+        recipient: targetJid,
+        recipientType: savedCode.recipientType === 'individual' ? 'individual' : 'group',
+        messageType: (savedCode.msgType as any) || 'text',
+        message: savedCode.message,
+        footer: savedCode.footer,
+        attachmentType: (savedCode.attachmentType as any) || 'none',
+        attachmentUrl: savedCode.attachmentUrl,
+        attachmentData: savedCode.attachmentData,
+        attachmentName: savedCode.attachmentName,
+        inlineAttachment: !!savedCode.inlineAttachment,
+        sessionId: assignedSessionId,
+        tagGroupMembers: !!savedCode.tagGroupMembers
+      });
+
+      enqueuedCount++;
+    }
+
+    if (typeof savedCode.delaySeconds === 'number' && savedCode.delaySeconds >= 0) {
+      globalDelaySeconds = savedCode.delaySeconds;
+    }
+
+    addLog(username, `🚀 Executed Saved Code .${savedCode.code}: Enqueued ${enqueuedCount} message(s) (Skipped ${skippedBanned} banned). Triggered via ${triggerSource}.`, 'success');
+    processUserQueue(username);
+
+    if (sockInstance && replyJid) {
+      await sockInstance.sendMessage(
+        replyJid,
+        {
+          text: `🚀 *.${savedCode.code} Triggered Successfully!* ✅\n\n` +
+                `🎯 *Target Count:* ${enqueuedCount} recipient(s)\n` +
+                `🚫 *Banned Skipped:* ${skippedBanned}\n` +
+                `📝 *Message:* ${savedCode.message ? (savedCode.message.substring(0, 60) + (savedCode.message.length > 60 ? '...' : '')) : '(Attachment)'}\n` +
+                `⏱️ *Delay Timer:* ${savedCode.delaySeconds || 0}s / message\n\n` +
+                `Messages added to active dispatch queue!`
+        },
+        triggerMsg ? { quoted: triggerMsg } : {}
+      );
+    }
+
+    return { success: true, enqueuedCount };
+  } catch (err: any) {
+    console.error(`Error executing saved code ${savedCode?.code}:`, err);
+    addLog(username, `❌ Error executing saved code .${savedCode?.code}: ${err.message}`, 'error');
+    if (sockInstance && replyJid) {
+      await sockInstance.sendMessage(replyJid, { text: `❌ *.${savedCode?.code} Error:* ${err.message}` }, triggerMsg ? { quoted: triggerMsg } : {});
+    }
+    return { success: false, enqueuedCount: 0, error: err.message };
+  }
+}
+
+interface UserSettings {
+  secretPrefix: string;
+  disableTextProcessing: boolean;
+  shareBatchSize: number;
+  shareBatchPauseSeconds: number;
+}
+
+function loadUserSettings(username: string): UserSettings {
   const filePath = path.join(getUserDir(username), 'settings.json');
   try {
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       return {
         secretPrefix: data.secretPrefix || '.',
-        disableTextProcessing: !!data.disableTextProcessing
+        disableTextProcessing: !!data.disableTextProcessing,
+        shareBatchSize: typeof data.shareBatchSize === 'number' && data.shareBatchSize > 0 ? data.shareBatchSize : 5,
+        shareBatchPauseSeconds: typeof data.shareBatchPauseSeconds === 'number' && data.shareBatchPauseSeconds >= 0 ? data.shareBatchPauseSeconds : 10
       };
     }
   } catch (err) {}
   
-  const defaultSettings = { secretPrefix: '.', disableTextProcessing: false };
+  const defaultSettings: UserSettings = {
+    secretPrefix: '.',
+    disableTextProcessing: false,
+    shareBatchSize: 5,
+    shareBatchPauseSeconds: 10
+  };
   try {
     fs.writeFileSync(filePath, JSON.stringify(defaultSettings, null, 2), 'utf8');
   } catch (err) {}
   return defaultSettings;
 }
 
-function saveUserSettings(username: string, settings: { secretPrefix: string; disableTextProcessing: boolean }) {
+function saveUserSettings(username: string, settings: Partial<UserSettings>) {
   const filePath = path.join(getUserDir(username), 'settings.json');
   try {
-    fs.writeFileSync(filePath, JSON.stringify(settings, null, 2), 'utf8');
+    const existing = loadUserSettings(username);
+    const updated: UserSettings = {
+      secretPrefix: settings.secretPrefix || existing.secretPrefix || '.',
+      disableTextProcessing: settings.disableTextProcessing !== undefined ? settings.disableTextProcessing : existing.disableTextProcessing,
+      shareBatchSize: typeof settings.shareBatchSize === 'number' && settings.shareBatchSize > 0 ? settings.shareBatchSize : existing.shareBatchSize,
+      shareBatchPauseSeconds: typeof settings.shareBatchPauseSeconds === 'number' && settings.shareBatchPauseSeconds >= 0 ? settings.shareBatchPauseSeconds : existing.shareBatchPauseSeconds
+    };
+    fs.writeFileSync(filePath, JSON.stringify(updated, null, 2), 'utf8');
     addLog(username, `User settings updated successfully.`, 'success');
   } catch (err: any) {
     addLog(username, `Failed to save user settings: ${err.message}`, 'error');
@@ -2054,6 +2408,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
       }
 
       if (connection === 'close') {
+        connectingLocks.delete(userSessKey);
         session.qrBase64 = null;
         session.activePairingCode = null;
         session.status = 'disconnected';
@@ -2080,7 +2435,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
           if (isQrTimeout) {
             addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing...`, 'info');
-            scheduleSessionReconnect(username, id, name, 5000);
+            scheduleSessionReconnect(username, id, name, 3000);
           } else {
             const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || errMessage.toLowerCase().includes('conflict');
             if (isConflict) {
@@ -2088,9 +2443,15 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               session.status = 'disconnected';
               session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect to resume.';
             } else {
-              addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
-              addLog(username, `[SESSION: ${id}] Performing clean socket reconnect in 5 seconds...`, 'info');
-              scheduleSessionReconnect(username, id, name, 5000);
+              const isStreamError = statusCode === 503 || statusCode === 515 || statusCode === 428 || errMessage.toLowerCase().includes('stream errored');
+              if (isStreamError) {
+                addLog(username, `[SESSION: ${id}] Transient WhatsApp stream drop (Code ${statusCode || 503}: ${errMessage}). Auto-reconnecting socket in 3s...`, 'info');
+                scheduleSessionReconnect(username, id, name, 3000);
+              } else {
+                addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
+                addLog(username, `[SESSION: ${id}] Performing clean socket reconnect in 3 seconds...`, 'info');
+                scheduleSessionReconnect(username, id, name, 3000);
+              }
             }
           }
         }
@@ -2106,6 +2467,27 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
         addLog(username, `[SESSION: ${id}] WhatsApp connected! JID: ${session.user.id} (${session.user.name})`, 'success');
 
+        // Send automatic startup "Bot is Live" notification to own WhatsApp number
+        const rawSelfJid = sockInstance.user?.id;
+        if (rawSelfJid) {
+          const selfNum = rawSelfJid.split(':')[0].split('@')[0];
+          const selfJid = `${selfNum}@s.whatsapp.net`;
+          const liveMsg = `🎉 *Congratulations! Message Bot is Live!* 🤖✨\n\n` +
+            `Your WhatsApp Bot session *${session.user.name || id}* (+${selfNum}) is online and active.\n\n` +
+            `⏱️ *Server Alive Since:* ${new Date(serverStartTime).toLocaleString()}\n` +
+            `⚡ *Current Uptime:* ${getUptimeFormatted(serverStartTime)}\n\n` +
+            `💡 *Tip:* Send *.alive* anytime to verify bot uptime and operational status!`;
+
+          setTimeout(async () => {
+            try {
+              await sockInstance.sendMessage(selfJid, { text: liveMsg });
+              addLog(username, `[SESSION: ${id}] Sent startup "Bot is Live" notification to own number (+${selfNum})`, 'success');
+            } catch (err: any) {
+              console.error('[STARTUP_MSG] Error sending startup message to self:', err);
+            }
+          }, 3000);
+        }
+
         // Resume queue processing immediately upon successful socket connection
         processUserQueue(username).catch(() => {});
       }
@@ -2117,12 +2499,56 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           const from = msg.key.remoteJid;
           const isMe = msg.key.fromMe;
 
-          // Check if this is a ".share" reply to a message
+          // Check raw message text
           const rawText = (msg.message?.conversation || 
                            msg.message?.extendedTextMessage?.text || 
                            msg.message?.imageMessage?.caption ||
                            msg.message?.videoMessage?.caption ||
                            '').trim();
+
+          // Handle .alive status command (works from self or incoming chats)
+          const lowerRawText = rawText.toLowerCase();
+          const isAliveCommand = lowerRawText === '.alive' || 
+                                 lowerRawText.startsWith('.alive ') ||
+                                 lowerRawText === '!alive';
+
+          if (isAliveCommand && from) {
+            try {
+              const uptimeStr = getUptimeFormatted(serverStartTime);
+              const startTimeStr = new Date(serverStartTime).toLocaleString();
+              const selfNum = sockInstance.user?.id ? sockInstance.user.id.split(':')[0].split('@')[0] : 'Unknown';
+
+              const responseText = `🤖 *WhatsApp Bot Status: ALIVE* ✅\n\n` +
+                `⏱️ *Server Uptime:* ${uptimeStr}\n` +
+                `📅 *Alive Since:* ${startTimeStr}\n` +
+                `📱 *Bot Number:* +${selfNum}\n` +
+                `🟢 *Session:* ${name || id}\n` +
+                `💻 *Platform:* ${os.type()} (${os.arch()})\n\n` +
+                `🎉 *Congratulations!* Bot engine is online and responding smoothly.`;
+
+              await simulateHumanTyping(sockInstance, from, responseText);
+              await sockInstance.sendMessage(from, { text: responseText }, { quoted: msg });
+              addLog(username, `[SESSION: ${id}] Responded to .alive command from ${from}`, 'success');
+            } catch (err: any) {
+              console.error('[ALIVE] Error responding to .alive command:', err);
+              addLog(username, `❌ Error responding to .alive command: ${err.message}`, 'error');
+            }
+            continue; // Handled successfully, skip further processing
+          }
+
+          // Handle 4-digit Permanent Saved Code Trigger (e.g. .1234, !1234, 1234, .code 1234)
+          const cleanCmd = rawText.trim();
+          const matchCodeCmd = cleanCmd.match(/^[.!#]?\s*(\d{4})$/) || cleanCmd.match(/^[.!#]?code\s*(\d{4})$/i);
+          if (matchCodeCmd && from) {
+            const inputDigits = matchCodeCmd[1];
+            const userSavedCodes = loadUserSavedCodes(username);
+            const foundCode = userSavedCodes.find(c => c.code === inputDigits);
+            if (foundCode) {
+              addLog(username, `[SAVED CODE .${inputDigits}] Triggered from ${from} via command "${cleanCmd}"`, 'info');
+              await executeSavedCode(username, foundCode, `WhatsApp Chat message (${from})`, sockInstance, from, msg);
+              continue;
+            }
+          }
           
           const contextInfo = msg.message?.extendedTextMessage?.contextInfo ||
                               msg.message?.imageMessage?.contextInfo ||
@@ -2132,6 +2558,106 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           
           const quotedMessage = contextInfo?.quotedMessage;
           const isShareReply = rawText.toLowerCase() === '.share' && !!quotedMessage;
+          const isShareNowReply = (lowerRawText === '.sharenow' || lowerRawText.startsWith('.sharenow ')) && !!quotedMessage;
+
+          // Handle .sharenow command (Immediately broadcasts quoted message to all joined groups except blocked ones)
+          if (isShareNowReply && from) {
+            try {
+              const settings = loadUserSettings(username);
+              const batchSize = settings.shareBatchSize || 5;
+              const pauseSec = settings.shareBatchPauseSeconds || 10;
+
+              addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Querying joined groups...`, 'info');
+              await sockInstance.sendMessage(from, { text: `🚀 *.sharenow Command Triggered!*\nFetching all joined WhatsApp groups for session...` }, { quoted: msg });
+
+              // Fetch all participating groups from WhatsApp socket
+              let groupsDict: any = {};
+              try {
+                groupsDict = await sockInstance.groupFetchAllParticipating();
+              } catch (err: any) {
+                console.error('[SHARENOW] Failed to fetch groups via socket:', err);
+              }
+
+              const allGroups = Object.values(groupsDict || {}) as any[];
+              const totalGroups = allGroups.length;
+
+              // Filter out globally banned / blocked groups
+              const eligibleGroups = allGroups.filter((g: any) => {
+                const groupJid = g.id || g.jid;
+                return groupJid && !isJidBlocked(groupJid);
+              });
+
+              const bannedCount = totalGroups - eligibleGroups.length;
+
+              if (eligibleGroups.length === 0) {
+                await sockInstance.sendMessage(from, { 
+                  text: `⚠️ *.sharenow Cancelled: No eligible groups found.*\nTotal joined groups: ${totalGroups}, Globally Banned groups skipped: ${bannedCount}.` 
+                }, { quoted: msg });
+                continue;
+              }
+
+              await sockInstance.sendMessage(from, { 
+                text: `📢 *.sharenow Starting Group Broadcast!*\n\n` +
+                      `🎯 *Target Groups:* ${eligibleGroups.length} (Skipped ${bannedCount} banned groups)\n` +
+                      `📦 *Batch Config:* ${batchSize} groups/batch with ${pauseSec}s pause\n\n` +
+                      `Sending messages now...` 
+              }, { quoted: msg });
+
+              const quotedSender = contextInfo.participant || contextInfo.remoteJid || '';
+              const originalMessage = {
+                key: {
+                  remoteJid: from,
+                  id: contextInfo.stanzaId || '',
+                  fromMe: quotedSender === sockInstance.user?.id || (sockInstance.user?.id && quotedSender.split('@')[0] === sockInstance.user?.id.split(':')[0]),
+                  participant: quotedSender
+                },
+                message: quotedMessage
+              };
+
+              let successCount = 0;
+              let failCount = 0;
+
+              // Process in configured batch size with pause delay
+              for (let i = 0; i < eligibleGroups.length; i += batchSize) {
+                const batch = eligibleGroups.slice(i, i + batchSize);
+
+                for (const targetGroup of batch) {
+                  const targetJid = targetGroup.id || targetGroup.jid;
+                  try {
+                    await simulateHumanTyping(sockInstance, targetJid, 'Broadcasting updates...');
+                    await sockInstance.sendMessage(targetJid, { forward: originalMessage });
+                    successCount++;
+                    addLog(username, `✅ [.SHARENOW] Forwarded message to ${targetGroup.subject || targetJid}`, 'success');
+                  } catch (err: any) {
+                    failCount++;
+                    console.error(`[.SHARENOW] Error forwarding to ${targetJid}:`, err);
+                    addLog(username, `❌ [.SHARENOW] Error forwarding to ${targetGroup.subject || targetJid}: ${err.message}`, 'error');
+                  }
+                  // Small safety delay between individual group sends
+                  await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1500) + 1000));
+                }
+
+                // Pause between batches if more groups remain
+                if (i + batchSize < eligibleGroups.length) {
+                  addLog(username, `⏸️ [.SHARENOW BATCH PAUSE] Sent batch of ${batch.length} groups. Waiting ${pauseSec}s before next batch...`, 'info');
+                  await new Promise(r => setTimeout(r, pauseSec * 1000));
+                }
+              }
+
+              await sockInstance.sendMessage(from, { 
+                text: `🎉 *.sharenow Broadcast Complete!* ✅\n\n` +
+                      `✅ *Successfully Sent:* ${successCount} groups\n` +
+                      `❌ *Failed:* ${failCount}\n` +
+                      `🚫 *Banned Groups Skipped:* ${bannedCount}` 
+              }, { quoted: msg });
+
+            } catch (err: any) {
+              console.error('[SHARENOW] Exception during execution:', err);
+              addLog(username, `❌ Error executing .sharenow: ${err.message}`, 'error');
+              await sockInstance.sendMessage(from, { text: `❌ *.sharenow Error:* ${err.message}` }, { quoted: msg });
+            }
+            continue;
+          }
 
           if (isShareReply && from) {
             try {
@@ -2765,9 +3291,11 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
       addLog(username, `Sending Status Batch of ${batchMembers.length} members from session "${session.name}"...`, 'info');
 
       let payload: any = {};
-      const options: any = {
-        statusJidList: finalJidList
-      };
+      const cleanJidList = finalJidList.filter(j => j && j !== 'status@broadcast');
+      const options: any = {};
+      if (cleanJidList.length > 0) {
+        options.statusJidList = cleanJidList;
+      }
 
       if (statusType === 'text') {
         payload = { text: text };
@@ -3121,6 +3649,8 @@ function getFirestoreStatusPayload() {
       res.json({
         success: true,
         resources: {
+          serverStartTime,
+          serverUptimeFormatted: getUptimeFormatted(serverStartTime),
           totalMem,
           freeMem,
           usedMem,
@@ -3265,20 +3795,156 @@ function getFirestoreStatusPayload() {
   });
 
   app.post('/api/settings', requireAuth, (req: any, res) => {
-    const { secretPrefix, disableTextProcessing } = req.body;
-    if (typeof secretPrefix !== 'string') {
+    const { secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds } = req.body;
+    if (secretPrefix !== undefined && typeof secretPrefix !== 'string') {
       return res.status(400).json({ success: false, error: 'secretPrefix must be a string.' });
     }
-    const cleanPrefix = secretPrefix.trim();
+    const cleanPrefix = secretPrefix ? secretPrefix.trim() : '.';
     if (!cleanPrefix) {
       return res.status(400).json({ success: false, error: 'secretPrefix cannot be empty.' });
     }
     const settings = { 
       secretPrefix: cleanPrefix,
-      disableTextProcessing: !!disableTextProcessing
+      disableTextProcessing: !!disableTextProcessing,
+      shareBatchSize: typeof shareBatchSize === 'number' && shareBatchSize > 0 ? shareBatchSize : 5,
+      shareBatchPauseSeconds: typeof shareBatchPauseSeconds === 'number' && shareBatchPauseSeconds >= 0 ? shareBatchPauseSeconds : 10
     };
     saveUserSettings(req.username, settings);
-    res.json({ success: true, settings, message: 'Settings saved successfully!' });
+    res.json({ success: true, settings: loadUserSettings(req.username), message: 'Settings saved successfully!' });
+  });
+
+  // Global Banned/Blocked Group IDs APIs (Applies across all accounts & users)
+  app.get('/api/blocked-groups', requireAuth, (req: any, res) => {
+    res.json({ success: true, blockedGroupIds: loadGlobalBlockedGroups() });
+  });
+
+  app.post('/api/blocked-groups', requireAuth, (req: any, res) => {
+    const { blockedGroupIds } = req.body;
+    if (!Array.isArray(blockedGroupIds)) {
+      return res.status(400).json({ success: false, error: 'blockedGroupIds must be an array of group IDs/JIDs.' });
+    }
+    const saved = saveGlobalBlockedGroups(blockedGroupIds);
+    addLog(req.username, `🛡️ Updated Global Banned Group List (${saved.length} banned groups active globally)`, 'success');
+    res.json({ success: true, blockedGroupIds: saved, message: 'Global banned group list updated successfully!' });
+  });
+
+  // Reusable Permanent Saved 4-Digit Codes APIs
+  app.get('/api/saved-codes', requireAuth, (req: any, res) => {
+    res.json({ success: true, savedCodes: loadUserSavedCodes(req.username) });
+  });
+
+  app.post('/api/saved-codes', requireAuth, (req: any, res) => {
+    const {
+      code,
+      message,
+      phoneNumber,
+      recipientType = 'group',
+      delaySeconds = 2,
+      tagGroupMembers = false,
+      sessionIds = ['primary'],
+      msgType = 'text',
+      footer,
+      attachmentType = 'none',
+      attachmentUrl,
+      attachmentName,
+      attachmentData,
+      inlineAttachment = false,
+      isStatus = false,
+      statusType,
+      backgroundColor,
+      font,
+      statusJidList,
+      mentions
+    } = req.body;
+
+    if (!code) {
+      return res.status(400).json({ success: false, error: '4-digit code is required.' });
+    }
+
+    const cleanCode = String(code).replace(/\D/g, '').trim();
+    if (cleanCode.length !== 4) {
+      return res.status(400).json({ success: false, error: 'Code must be exactly 4 numeric digits (e.g. 1234).' });
+    }
+
+    const isStatusMode = isStatus || recipientType === 'status';
+
+    if (!isStatusMode && !phoneNumber) {
+      return res.status(400).json({ success: false, error: 'Recipient group ID or phone number is required.' });
+    }
+
+    if (!message && (attachmentType === 'none' || !attachmentType)) {
+      return res.status(400).json({ success: false, error: 'Please provide either a message body or an attachment for this saved code.' });
+    }
+
+    const savedCodes = loadUserSavedCodes(req.username);
+    const existingIndex = savedCodes.findIndex(c => c.code === cleanCode);
+
+    const newSavedCode: SavedCode = {
+      id: existingIndex >= 0 ? savedCodes[existingIndex].id : Math.random().toString(36).substring(7),
+      code: cleanCode,
+      message: message || '',
+      phoneNumber: phoneNumber || 'status@broadcast',
+      recipientType: isStatusMode ? 'status' : recipientType,
+      delaySeconds: typeof delaySeconds === 'number' && delaySeconds >= 0 ? delaySeconds : 2,
+      tagGroupMembers: !!tagGroupMembers,
+      sessionIds: Array.isArray(sessionIds) ? sessionIds : ['primary'],
+      msgType,
+      footer,
+      attachmentType,
+      attachmentUrl,
+      attachmentName,
+      attachmentData,
+      inlineAttachment: !!inlineAttachment,
+      isStatus: isStatusMode,
+      statusType: isStatusMode ? (statusType || (attachmentType === 'image' ? 'image' : attachmentType === 'video' ? 'video' : 'text')) : undefined,
+      backgroundColor: isStatusMode ? backgroundColor : undefined,
+      font: isStatusMode ? font : undefined,
+      statusJidList: Array.isArray(statusJidList) ? statusJidList : undefined,
+      mentions: Array.isArray(mentions) ? mentions : undefined,
+      createdAt: new Date().toISOString()
+    };
+
+    if (existingIndex >= 0) {
+      savedCodes[existingIndex] = newSavedCode;
+    } else {
+      savedCodes.unshift(newSavedCode);
+    }
+
+    saveUserSavedCodes(req.username, savedCodes);
+    addLog(req.username, `💾 Saved ${isStatusMode ? 'Status' : 'Message'} Code .${cleanCode} permanently stored.`, 'success');
+
+    res.json({
+      success: true,
+      savedCodes,
+      savedCode: newSavedCode,
+      message: `Code .${cleanCode} saved permanently! Type .${cleanCode} in WhatsApp anytime to trigger.`
+    });
+  });
+
+  app.delete('/api/saved-codes/:id', requireAuth, (req: any, res) => {
+    const { id } = req.params;
+    const savedCodes = loadUserSavedCodes(req.username);
+    const updated = savedCodes.filter(c => c.id !== id && c.code !== id);
+    saveUserSavedCodes(req.username, updated);
+    addLog(req.username, `🗑️ Deleted saved code (${id})`, 'info');
+    res.json({ success: true, savedCodes: updated, message: 'Saved code removed successfully.' });
+  });
+
+  app.post('/api/saved-codes/trigger/:id', requireAuth, async (req: any, res) => {
+    const { id } = req.params;
+    const savedCodes = loadUserSavedCodes(req.username);
+    const foundCode = savedCodes.find(c => c.id === id || c.code === id);
+
+    if (!foundCode) {
+      return res.status(404).json({ success: false, error: 'Saved code not found.' });
+    }
+
+    const result = await executeSavedCode(req.username, foundCode, 'Web UI Trigger Button');
+    if (result.success) {
+      res.json({ success: true, enqueuedCount: result.enqueuedCount, message: `Triggered .${foundCode.code}! Enqueued ${result.enqueuedCount} message(s).` });
+    } else {
+      res.status(400).json({ success: false, error: result.error || 'Failed to trigger saved code.' });
+    }
   });
 
   // Captured Group Invites APIs
@@ -3411,8 +4077,14 @@ function getFirestoreStatusPayload() {
       return res.status(404).json({ success: false, error: 'Captured share not found.' });
     }
 
-    const results: Array<{ jid: string; success: boolean; error?: string }> = [];
+    const userSettings = loadUserSettings(req.username);
+    const batchSize = userSettings.shareBatchSize || 5;
+    const pauseSec = userSettings.shareBatchPauseSeconds || 10;
 
+    const results: Array<{ jid: string; success: boolean; error?: string }> = [];
+    const validTargetJids: string[] = [];
+
+    // Pre-filter target JIDs to exclude globally banned/blocked groups
     for (const targetJid of targetJids) {
       const cleanJid = targetJid.trim();
       if (!cleanJid) continue;
@@ -3426,43 +4098,66 @@ function getFirestoreStatusPayload() {
         }
       }
 
-      try {
-        addLog(req.username, `Forwarding shared message to ${formattedJid}...`, 'info');
-        
-        // Construct native message representation for Baileys to forward the same original message
-        const originalMessage = {
-          key: {
-            remoteJid: share.from,
-            id: share.quotedMessageId,
-            fromMe: share.quotedSender === sess.sock.user?.id || (sess.sock.user?.id && share.quotedSender.split('@')[0] === sess.sock.user?.id.split(':')[0]),
-            participant: share.quotedSender
-          },
-          message: share.quotedMessage
-        };
-        
-        // Forward message natively using Baileys { forward: ... } option
-        await simulateHumanTyping(sess.sock, formattedJid, share.displayText);
-        await sess.sock.sendMessage(formattedJid, { forward: originalMessage });
-        
-        results.push({ jid: formattedJid, success: true });
-        addLog(req.username, `✅ Forwarded message to ${formattedJid} successfully.`, 'success');
-      } catch (err: any) {
-        console.error(`Error forwarding to ${formattedJid}:`, err);
-        let errMsg = err?.message || String(err);
-        
-        const lowerErr = errMsg.toLowerCase();
-        if (lowerErr.includes('not-in-group') || 
-            lowerErr.includes('not-authorized') || 
-            lowerErr.includes('403') || 
-            lowerErr.includes('forbidden') || 
-            lowerErr.includes('unauthorized') ||
-            lowerErr.includes('notauthorized') ||
-            lowerErr.includes('not_in_group')) {
-          errMsg = 'Forbidden: You are not a member of this group or have been removed.';
+      if (isJidBlocked(formattedJid)) {
+        results.push({ jid: formattedJid, success: false, error: 'Banned: Group is in global blocked/banned list.' });
+        addLog(req.username, `🚫 Forward skipped for ${formattedJid}: Group is in global banned/blocked list.`, 'info');
+      } else {
+        validTargetJids.push(formattedJid);
+      }
+    }
+
+    // Process valid targets in batches of configured batchSize
+    for (let i = 0; i < validTargetJids.length; i += batchSize) {
+      const batch = validTargetJids.slice(i, i + batchSize);
+
+      for (const formattedJid of batch) {
+        try {
+          addLog(req.username, `Forwarding shared message to ${formattedJid}...`, 'info');
+          
+          // Construct native message representation for Baileys to forward the same original message
+          const originalMessage = {
+            key: {
+              remoteJid: share.from,
+              id: share.quotedMessageId,
+              fromMe: share.quotedSender === sess.sock.user?.id || (sess.sock.user?.id && share.quotedSender.split('@')[0] === sess.sock.user?.id.split(':')[0]),
+              participant: share.quotedSender
+            },
+            message: share.quotedMessage
+          };
+          
+          // Forward message natively using Baileys { forward: ... } option
+          await simulateHumanTyping(sess.sock, formattedJid, share.displayText);
+          await sess.sock.sendMessage(formattedJid, { forward: originalMessage });
+          
+          results.push({ jid: formattedJid, success: true });
+          addLog(req.username, `✅ Forwarded message to ${formattedJid} successfully.`, 'success');
+        } catch (err: any) {
+          console.error(`Error forwarding to ${formattedJid}:`, err);
+          let errMsg = err?.message || String(err);
+          
+          const lowerErr = errMsg.toLowerCase();
+          if (lowerErr.includes('not-in-group') || 
+              lowerErr.includes('not-authorized') || 
+              lowerErr.includes('403') || 
+              lowerErr.includes('forbidden') || 
+              lowerErr.includes('unauthorized') ||
+              lowerErr.includes('notauthorized') ||
+              lowerErr.includes('not_in_group')) {
+            errMsg = 'Forbidden: You are not a member of this group or have been removed.';
+          }
+          
+          results.push({ jid: formattedJid, success: false, error: errMsg });
+          addLog(req.username, `❌ Failed to forward to ${formattedJid}: ${errMsg}`, 'error');
         }
-        
-        results.push({ jid: formattedJid, success: false, error: errMsg });
-        addLog(req.username, `❌ Failed to forward to ${formattedJid}: ${errMsg}`, 'error');
+
+        // Small delay between individual message sends
+        await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1500) + 1000));
+      }
+
+      // Pause between batches if more targets remain
+      if (i + batchSize < validTargetJids.length) {
+        addLog(req.username, `⏸️ [SHARE BATCH PAUSE] Sent batch of ${batch.length} groups. Waiting ${pauseSec}s before next batch...`, 'info');
+        await new Promise(r => setTimeout(r, pauseSec * 1000));
       }
     }
 
@@ -3955,6 +4650,20 @@ function getFirestoreStatusPayload() {
 
     const dailyTrend = Array.from(dailyDataMap.values());
 
+    // Calculate today's specific dispatches
+    const todayStr = new Date().toISOString().split('T')[0];
+    let todaySent = 0;
+    let todayFailed = 0;
+    for (const msg of sentHistory) {
+      if (!msg.timestamp) continue;
+      const dateKey = msg.timestamp.split('T')[0];
+      if (dateKey === todayStr) {
+        if (msg.status === 'sent') todaySent++;
+        else if (msg.status === 'failed') todayFailed++;
+      }
+    }
+    const todayTotal = todaySent + todayFailed;
+
     // Performance metrics
     let totalSpeedMs = 0;
     let countWithSpeed = 0;
@@ -3991,6 +4700,9 @@ function getFirestoreStatusPayload() {
       summary: {
         totalSent,
         totalFailed,
+        todaySent,
+        todayFailed,
+        todayTotal,
         queuePending,
         queueProcessing,
         avgSpeedSeconds,
@@ -4124,6 +4836,8 @@ function getFirestoreStatusPayload() {
     }
 
     const addedItems = [];
+    let skippedBlockedCount = 0;
+
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i];
       const assignedSessionId = getAssignedSessionIdForRecipient(req.username, recipient, recipientType, validSessions[i % validSessions.length], validSessions);
@@ -4138,6 +4852,12 @@ function getFirestoreStatusPayload() {
         if (cleanNumber) {
           targetJid = `${cleanNumber}@s.whatsapp.net`;
         }
+      }
+
+      if (isJidBlocked(targetJid)) {
+        skippedBlockedCount++;
+        addLog(req.username, `🚫 Skipped ${targetJid}: Recipient/Group is in global banned/blocked list.`, 'info');
+        continue;
       }
 
       if (recipientType === 'group' && tagGroupMembers) {
@@ -4392,15 +5112,21 @@ function getFirestoreStatusPayload() {
     } = req.body;
 
     const isGroupMode = batchMode === 'groups';
+    const statusJidList = req.body.statusJidList || [];
 
-    if (isGroupMode) {
-      if (!groupIds || groupIds.length === 0) {
-        return res.status(400).json({ success: false, error: 'No groups selected for the scheduled background queue.' });
+    let activeMembers = Array.isArray(groupMembers) ? [...groupMembers] : [];
+    if (!isGroupMode) {
+      if (activeMembers.length === 0 && statusJidList.length > 0) {
+        activeMembers = [...statusJidList];
       }
-    } else {
-      if (!groupMembers || groupMembers.length === 0) {
-        return res.status(400).json({ success: false, error: 'No group members provided for the scheduled background tags.' });
+      if (activeMembers.length === 0) {
+        // Fallback for general status broadcast without specific recipient filter
+        activeMembers = ['status@broadcast'];
       }
+    }
+
+    if (isGroupMode && (!groupIds || groupIds.length === 0)) {
+      return res.status(400).json({ success: false, error: 'No groups selected for the scheduled background queue.' });
     }
 
     const cleanDelay = Math.max(1, Math.min(60, Number(delayMinutes) || 5));
@@ -4420,8 +5146,8 @@ function getFirestoreStatusPayload() {
       attachmentName,
       sessionIds,
       batchMode,
-      totalMembersCount: groupMembers.length,
-      remainingMembers: groupMembers,
+      totalMembersCount: activeMembers.length,
+      remainingMembers: activeMembers,
       completedMembers: [],
       totalGroupsCount: groupIds.length,
       remainingGroups: groupIds,
@@ -4431,7 +5157,7 @@ function getFirestoreStatusPayload() {
       batchSize: cleanBatchSize,
       status: 'active',
       createdAt: new Date().toISOString(),
-      nextRunAt: startTime ? new Date(startTime).toISOString() : new Date(Date.now() + 5000).toISOString() // start first batch at future time or in 5s!
+      nextRunAt: startTime ? new Date(startTime).toISOString() : new Date(Date.now() + 5000).toISOString()
     };
 
     const filePath = path.join(getUserDir(req.username), 'status_schedules.json');

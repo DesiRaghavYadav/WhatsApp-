@@ -65,7 +65,12 @@ import {
   Pause,
   ArrowUp,
   ArrowDown,
-  Search
+  Search,
+  Save,
+  Code,
+  Gauge,
+  Edit2,
+  Target
 } from 'lucide-react';
 
 import {
@@ -268,14 +273,31 @@ export default function App() {
   // Settings & Group Invites State
   const [secretPrefix, setSecretPrefix] = useState<string>('.');
   const [disableTextProcessing, setDisableTextProcessing] = useState<boolean>(false);
+  const [shareBatchSize, setShareBatchSize] = useState<number>(5);
+  const [shareBatchPauseSeconds, setShareBatchPauseSeconds] = useState<number>(10);
+  const [globalBlockedGroups, setGlobalBlockedGroups] = useState<string[]>([]);
+  const [blockedInput, setBlockedInput] = useState<string>('');
+  const [isSavingBlocked, setIsSavingBlocked] = useState<boolean>(false);
   const [capturedGroupInvites, setCapturedGroupInvites] = useState<any[]>([]);
   const [isLoadingCapturedGroups, setIsLoadingCapturedGroups] = useState<boolean>(false);
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
   const [serverResources, setServerResources] = useState<any>(null);
 
+  // Reusable Permanent Saved 4-Digit Codes State
+  const [savedCodes, setSavedCodes] = useState<any[]>([]);
+  const [saveCodeInput, setSaveCodeInput] = useState<string>('');
+  const [isSavingCode, setIsSavingCode] = useState<boolean>(false);
+
   // Delivery Analytics State
+  const [dailyLimitCap, setDailyLimitCap] = useState<number>(() => {
+    const saved = localStorage.getItem('wa_daily_limit_cap');
+    return saved ? parseInt(saved, 10) || 1000 : 1000;
+  });
+  const [isEditingCap, setIsEditingCap] = useState<boolean>(false);
+  const [capInput, setCapInput] = useState<string>('1000');
+
   const [analyticsData, setAnalyticsData] = useState<any>({
-    summary: { totalSent: 0, totalFailed: 0, queuePending: 0, queueProcessing: 0, avgSpeedSeconds: 2, loadPercentage: 0 },
+    summary: { totalSent: 0, totalFailed: 0, todaySent: 0, todayFailed: 0, todayTotal: 0, queuePending: 0, queueProcessing: 0, avgSpeedSeconds: 2, loadPercentage: 0 },
     dailyTrend: [],
     sessionsLoad: []
   });
@@ -556,6 +578,8 @@ export default function App() {
         if (data.success && data.settings) {
           setSecretPrefix(data.settings.secretPrefix || '.');
           setDisableTextProcessing(!!data.settings.disableTextProcessing);
+          setShareBatchSize(data.settings.shareBatchSize || 5);
+          setShareBatchPauseSeconds(data.settings.shareBatchPauseSeconds || 10);
         }
       }
     } catch (e) {
@@ -563,17 +587,24 @@ export default function App() {
     }
   };
 
-  const saveSettings = async (prefix: string, disableText: boolean) => {
+  const saveSettings = async (prefix: string, disableText: boolean, batchSize: number, pauseSec: number) => {
     setIsSavingSettings(true);
     try {
       const res = await fetchWithAuth('/api/settings', {
         method: 'POST',
-        body: JSON.stringify({ secretPrefix: prefix, disableTextProcessing: disableText })
+        body: JSON.stringify({ 
+          secretPrefix: prefix, 
+          disableTextProcessing: disableText,
+          shareBatchSize: batchSize,
+          shareBatchPauseSeconds: pauseSec
+        })
       });
       const data = await res.json();
       if (res.ok && data.success) {
         setSecretPrefix(data.settings.secretPrefix);
         setDisableTextProcessing(!!data.settings.disableTextProcessing);
+        setShareBatchSize(data.settings.shareBatchSize);
+        setShareBatchPauseSeconds(data.settings.shareBatchPauseSeconds);
         setFeedback({ type: 'success', text: 'Settings updated successfully!' });
       } else {
         setFeedback({ type: 'error', text: data.error || 'Failed to save settings.' });
@@ -582,6 +613,42 @@ export default function App() {
       setFeedback({ type: 'error', text: 'Network error saving settings.' });
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  const fetchBlockedGroups = async () => {
+    try {
+      const res = await fetchWithAuth('/api/blocked-groups');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.blockedGroupIds)) {
+          setGlobalBlockedGroups(data.blockedGroupIds);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching blocked groups:', e);
+    }
+  };
+
+  const saveBlockedGroups = async (newList: string[]) => {
+    setIsSavingBlocked(true);
+    try {
+      const res = await fetchWithAuth('/api/blocked-groups', {
+        method: 'POST',
+        body: JSON.stringify({ blockedGroupIds: newList })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setGlobalBlockedGroups(data.blockedGroupIds);
+        setBlockedInput('');
+        setFeedback({ type: 'success', text: 'Global banned group list updated successfully!' });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to save banned groups.' });
+      }
+    } catch (e) {
+      setFeedback({ type: 'error', text: 'Network error updating banned groups.' });
+    } finally {
+      setIsSavingBlocked(false);
     }
   };
 
@@ -617,11 +684,114 @@ export default function App() {
     }
   };
 
+  const fetchSavedCodes = async () => {
+    try {
+      const res = await fetchWithAuth('/api/saved-codes');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.savedCodes)) {
+          setSavedCodes(data.savedCodes);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching saved codes:', e);
+    }
+  };
+
+  const handleSaveAsCode = async () => {
+    const cleanDigits = saveCodeInput.replace(/\D/g, '').trim();
+    if (cleanDigits.length !== 4) {
+      setFeedback({ type: 'error', text: 'Please enter a valid 4-digit numeric code (e.g. 1234 or 5678).' });
+      return;
+    }
+
+    if (!phoneNumber) {
+      setFeedback({ type: 'error', text: 'Please enter target phone number or Group JID.' });
+      return;
+    }
+
+    if (!message && attachmentType === 'none') {
+      setFeedback({ type: 'error', text: 'Please type a message body or attach a file to save with this code.' });
+      return;
+    }
+
+    setIsSavingCode(true);
+    try {
+      const res = await fetchWithAuth('/api/saved-codes', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: cleanDigits,
+          phoneNumber,
+          message,
+          recipientType,
+          delaySeconds: globalDelaySecondsState,
+          tagGroupMembers,
+          sessionIds: selectedSessionIds,
+          msgType,
+          footer: footerText,
+          attachmentType,
+          attachmentUrl,
+          attachmentName,
+          attachmentData,
+          inlineAttachment
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSavedCodes(data.savedCodes || []);
+        setSaveCodeInput('');
+        setFeedback({
+          type: 'success',
+          text: `🎉 Code .${cleanDigits} saved permanently! Send .${cleanDigits} in WhatsApp anytime to trigger message delivery.`
+        });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to save code.' });
+      }
+    } catch (e) {
+      setFeedback({ type: 'error', text: 'Network error saving code.' });
+    } finally {
+      setIsSavingCode(false);
+    }
+  };
+
+  const handleDeleteSavedCode = async (id: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/saved-codes/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setSavedCodes(data.savedCodes || []);
+          setFeedback({ type: 'success', text: 'Saved code deleted successfully.' });
+        }
+      }
+    } catch (e) {
+      console.error('Error deleting saved code:', e);
+    }
+  };
+
+  const handleTriggerSavedCode = async (id: string, code: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/saved-codes/trigger/${id}`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setFeedback({ type: 'success', text: `🚀 Triggered .${code}! Enqueued ${data.enqueuedCount} message(s).` });
+        fetchQueue();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to trigger saved code.' });
+      }
+    } catch (e) {
+      setFeedback({ type: 'error', text: 'Network error triggering saved code.' });
+    }
+  };
+
   useEffect(() => {
     if (token) {
       fetchWorkflows();
       fetchSettings();
+      fetchBlockedGroups();
       fetchCapturedGroupInvites();
+      fetchSavedCodes();
     }
   }, [token]);
 
@@ -3785,6 +3955,107 @@ export default function App() {
                       )}
                     </button>
 
+                    {/* Save as Permanent 4-Digit Code Section */}
+                    <div className="pt-4 border-t border-slate-850 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-white flex items-center gap-2">
+                          <Bookmark className="w-4 h-4 text-amber-400" />
+                          <span>Save Message as Permanent Code</span>
+                        </span>
+                        <span className="text-[10px] text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 font-semibold">
+                          Trigger via .code in chat
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center">
+                        <div className="sm:col-span-5 relative">
+                          <input
+                            type="text"
+                            maxLength={4}
+                            placeholder="e.g. 1234"
+                            value={saveCodeInput}
+                            onChange={(e) => setSaveCodeInput(e.target.value.replace(/\D/g, ''))}
+                            className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl pl-7 pr-3 py-2 text-xs text-white font-mono placeholder-slate-600 outline-none transition-colors tracking-widest text-center font-bold"
+                          />
+                          <span className="absolute left-3 top-2 text-xs font-mono text-amber-400 font-bold">.</span>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={isSavingCode || !saveCodeInput.trim() || saveCodeInput.replace(/\D/g, '').length !== 4}
+                          onClick={handleSaveAsCode}
+                          className="sm:col-span-7 flex items-center justify-center gap-1.5 py-2 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-amber-500/10"
+                        >
+                          {isSavingCode ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          <span>Save as Code {saveCodeInput ? `.${saveCodeInput}` : ''}</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Saves message body, targets (<code className="text-amber-400 font-mono">{phoneNumber || 'Group ID'}</code>), and <code className="text-amber-400 font-mono">{globalDelaySecondsState}s delay</code>. Type <code className="text-amber-400 font-mono font-bold">.{saveCodeInput || '1234'}</code> in WhatsApp chat anytime to execute!
+                      </p>
+                    </div>
+
+                    {/* Permanent Saved Codes List Card */}
+                    {savedCodes.length > 0 && (
+                      <div className="pt-3 border-t border-slate-850 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5 uppercase tracking-wider">
+                            <Code className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Saved Reusable Codes ({savedCodes.length})</span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-mono">Permanent</span>
+                        </div>
+
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                          {savedCodes.map((sc) => (
+                            <div key={sc.id} className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                              <div className="space-y-1 flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="px-2 py-0.5 bg-amber-500/15 text-amber-400 font-mono font-bold text-xs rounded border border-amber-500/30">
+                                    .{sc.code}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono truncate max-w-[140px]">
+                                    🎯 {sc.phoneNumber}
+                                  </span>
+                                  <span className="text-[10px] text-emerald-400 font-mono font-semibold">
+                                    ⏱️ {sc.delaySeconds || 0}s
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-300 truncate font-sans">
+                                  {sc.message || '(Attachment)'}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleTriggerSavedCode(sc.id, sc.code)}
+                                  className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-[10.5px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                                  title="Test run from web UI"
+                                >
+                                  <Play className="w-3 h-3 text-emerald-400" />
+                                  <span>Run</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteSavedCode(sc.id)}
+                                  className="p-1.5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
+                                  title="Delete saved code"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                   </form>
                 </div>
 
@@ -4293,15 +4564,144 @@ export default function App() {
                       </button>
                     </div>
 
+                    {/* Share Batching & Pause Config */}
+                    <div className="pt-4 border-t border-slate-800 space-y-3">
+                      <label className="text-xs font-semibold text-slate-300 block flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Share & Forward Batch Rate Limiting</span>
+                      </label>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-1">Batch Size (Groups/Batch)</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            value={shareBatchSize}
+                            onChange={(e) => setShareBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-1">Pause After Batch (Seconds)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={600}
+                            value={shareBatchPauseSeconds}
+                            onChange={(e) => setShareBatchPauseSeconds(Math.max(0, parseInt(e.target.value) || 0))}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <p className="text-[10px] text-slate-500 leading-relaxed">
+                        When using <code className="text-emerald-400 font-mono">.sharenow</code> or forwarding shares, the bot sends to <strong>{shareBatchSize}</strong> groups, pauses for <strong>{shareBatchPauseSeconds}s</strong>, and continues safely.
+                      </p>
+                    </div>
+
                     <button
                       type="button"
                       disabled={isSavingSettings}
-                      onClick={() => saveSettings(secretPrefix, disableTextProcessing)}
+                      onClick={() => saveSettings(secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds)}
                       className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
                     >
                       <Check className="w-4 h-4" />
                       <span>{isSavingSettings ? 'Saving Settings...' : 'Save Settings'}</span>
                     </button>
+                  </div>
+                </div>
+
+                {/* Global Banned / Blocked Group IDs Card */}
+                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+                  <div className="absolute top-0 left-0 w-1.5 h-full bg-rose-500" />
+
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider">
+                      <ShieldAlert className="w-4 h-4 text-rose-400" />
+                      <span>Global Banned Group IDs ({globalBlockedGroups.length})</span>
+                    </h3>
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                      All Accounts
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                    Group IDs listed here are banned globally across <strong>all logged-in numbers and users</strong>. The bot will automatically skip these groups in queues, batch shares, and <code className="text-rose-400 font-mono">.sharenow</code>.
+                  </p>
+
+                  <div className="space-y-4">
+                    {/* Input box for new blocked groups */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-slate-300">Add Banned Group IDs (One per line or comma-separated)</label>
+                      <textarea
+                        rows={3}
+                        placeholder="e.g. 12036301234567890@g.us, 12036398765432100"
+                        value={blockedInput}
+                        onChange={(e) => setBlockedInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white placeholder-slate-600 outline-none focus:border-rose-500 transition-colors font-mono resize-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={isSavingBlocked || !blockedInput.trim()}
+                        onClick={() => {
+                          const newIds = blockedInput
+                            .split(/[\n,]/)
+                            .map(s => s.trim())
+                            .filter(Boolean);
+                          if (newIds.length > 0) {
+                            const merged = Array.from(new Set([...globalBlockedGroups, ...newIds]));
+                            saveBlockedGroups(merged);
+                          }
+                        }}
+                        className="w-full flex items-center justify-center gap-1.5 py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add to Banned List</span>
+                      </button>
+                    </div>
+
+                    {/* Badge list of currently blocked group IDs */}
+                    {globalBlockedGroups.length > 0 ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Active Banned Groups</label>
+                          <button
+                            type="button"
+                            onClick={() => saveBlockedGroups([])}
+                            className="text-[10px] text-rose-400 hover:underline flex items-center gap-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Clear All ({globalBlockedGroups.length})</span>
+                          </button>
+                        </div>
+
+                        <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                          {globalBlockedGroups.map((jid) => (
+                            <div key={jid} className="flex items-center justify-between bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+                              <span className="font-mono text-slate-300 text-[11px] truncate mr-2">{jid}</span>
+                              <button
+                                type="button"
+                                title="Unblock / Remove"
+                                onClick={() => {
+                                  const filtered = globalBlockedGroups.filter(item => item !== jid);
+                                  saveBlockedGroups(filtered);
+                                }}
+                                className="p-1 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-slate-950/40 border border-slate-800/60 rounded-xl text-center text-xs text-slate-500">
+                        No groups are currently banned globally.
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -4554,18 +4954,20 @@ export default function App() {
             </div>
 
             {/* Performance KPIs Summary */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-5">
               {/* Card 1: Success Rate */}
-              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl">
+              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl flex flex-col justify-between">
                 <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full filter blur-2xl pointer-events-none" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Success Rate Ratio</span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-extrabold text-white">
-                    {Math.round((analyticsData.summary.totalSent / (analyticsData.summary.totalSent + analyticsData.summary.totalFailed || 1)) * 100)}%
-                  </span>
-                  <span className="text-xs font-semibold text-emerald-400 font-mono flex items-center gap-0.5">
-                    <CheckCircle className="w-3 h-3" /> SLA
-                  </span>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Success Rate Ratio</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-extrabold text-white">
+                      {Math.round((analyticsData.summary.totalSent / (analyticsData.summary.totalSent + analyticsData.summary.totalFailed || 1)) * 100)}%
+                    </span>
+                    <span className="text-xs font-semibold text-emerald-400 font-mono flex items-center gap-0.5">
+                      <CheckCircle className="w-3 h-3" /> SLA
+                    </span>
+                  </div>
                 </div>
                 <div className="mt-3.5 text-slate-500 text-[10px] leading-relaxed">
                   Percentage of total dispatched socket packets acknowledged.
@@ -4573,14 +4975,16 @@ export default function App() {
               </div>
 
               {/* Card 2: Total Dispatched */}
-              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl">
+              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl flex flex-col justify-between">
                 <div className="absolute top-0 right-0 w-24 h-24 bg-teal-500/5 rounded-full filter blur-2xl pointer-events-none" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Total Dispatches</span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-extrabold text-white">
-                    {analyticsData.summary.totalSent + analyticsData.summary.totalFailed}
-                  </span>
-                  <span className="text-xs font-medium text-slate-400">Msgs</span>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Total Dispatches</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-extrabold text-white">
+                      {analyticsData.summary.totalSent + analyticsData.summary.totalFailed}
+                    </span>
+                    <span className="text-xs font-medium text-slate-400">Msgs</span>
+                  </div>
                 </div>
                 <div className="mt-3.5 text-slate-400 text-[10px] flex gap-3 font-mono">
                   <span className="text-emerald-400">Sent: {analyticsData.summary.totalSent}</span>
@@ -4588,30 +4992,143 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Card 3: Backlog Delay */}
-              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl">
+              {/* Card 3: Daily Message Limit Usage (Configurable Cap) */}
+              {(() => {
+                const todayMsgCount = analyticsData.summary.todayTotal ?? (analyticsData.summary.todaySent + analyticsData.summary.todayFailed);
+                const usagePct = Math.min(100, Math.round((todayMsgCount / (dailyLimitCap || 1)) * 100));
+                const isHighUsage = usagePct >= 90;
+                const isWarnUsage = usagePct >= 75 && usagePct < 90;
+                
+                const statusColor = isHighUsage ? 'text-rose-400' : isWarnUsage ? 'text-amber-400' : 'text-emerald-400';
+                const statusBg = isHighUsage ? 'bg-rose-500' : isWarnUsage ? 'bg-amber-500' : 'bg-emerald-500';
+                const badgeBg = isHighUsage 
+                  ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                  : isWarnUsage 
+                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                  : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+
+                return (
+                  <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl flex flex-col justify-between">
+                    <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full filter blur-2xl pointer-events-none" />
+                    
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                          <Gauge className="w-3 h-3 text-purple-400" />
+                          <span>Daily Limit Usage</span>
+                        </span>
+                        
+                        <button
+                          onClick={() => {
+                            setCapInput(dailyLimitCap.toString());
+                            setIsEditingCap(!isEditingCap);
+                          }}
+                          className="text-[10px] text-slate-400 hover:text-purple-300 transition-colors p-1 rounded hover:bg-slate-800/80 cursor-pointer flex items-center gap-1"
+                          title="Configure Daily Cap Limit"
+                        >
+                          <Edit2 className="w-3 h-3 text-purple-400" />
+                          <span className="font-mono text-[9px] text-purple-300 font-bold">{dailyLimitCap.toLocaleString()}/day</span>
+                        </button>
+                      </div>
+
+                      {/* Inline Daily Cap Configurator */}
+                      {isEditingCap ? (
+                        <div className="mb-2.5 p-2 bg-slate-950 border border-purple-500/30 rounded-xl space-y-1.5">
+                          <label className="text-[9px] font-bold text-slate-300 block">Set Daily Cap Limit:</label>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={10}
+                              max={100000}
+                              value={capInput}
+                              onChange={(e) => setCapInput(e.target.value)}
+                              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white font-mono font-bold outline-none focus:border-purple-500"
+                            />
+                            <button
+                              onClick={() => {
+                                const newCap = Math.max(1, parseInt(capInput, 10) || 1000);
+                                setDailyLimitCap(newCap);
+                                localStorage.setItem('wa_daily_limit_cap', newCap.toString());
+                                setIsEditingCap(false);
+                              }}
+                              className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-[10px] px-2 py-1 rounded-lg transition-all cursor-pointer shrink-0"
+                            >
+                              Save
+                            </button>
+                          </div>
+                          <div className="flex gap-1 pt-1 flex-wrap">
+                            {[500, 1000, 2500, 5000].map((preset) => (
+                              <button
+                                key={preset}
+                                onClick={() => {
+                                  setCapInput(preset.toString());
+                                  setDailyLimitCap(preset);
+                                  localStorage.setItem('wa_daily_limit_cap', preset.toString());
+                                  setIsEditingCap(false);
+                                }}
+                                className="text-[9px] bg-slate-900 hover:bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono cursor-pointer border border-slate-750"
+                              >
+                                {preset.toLocaleString()}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-baseline gap-2">
+                          <span className={`text-3xl font-extrabold ${statusColor}`}>
+                            {usagePct}%
+                          </span>
+                          <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${badgeBg}`}>
+                            {isHighUsage ? 'Cap Warning' : isWarnUsage ? 'Moderate' : 'Optimal'}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Progress Bar */}
+                      <div className="w-full bg-slate-950 rounded-full h-1.5 mt-2.5 overflow-hidden border border-slate-800">
+                        <div 
+                          className={`h-full transition-all duration-500 rounded-full ${statusBg}`} 
+                          style={{ width: `${usagePct}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3 text-slate-400 text-[10px] flex items-center justify-between font-mono">
+                      <span>{todayMsgCount.toLocaleString()} / {dailyLimitCap.toLocaleString()} msgs today</span>
+                      <span className="text-slate-500 font-sans">Cap Limit</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Card 4: Backlog Delay */}
+              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl flex flex-col justify-between">
                 <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/5 rounded-full filter blur-2xl pointer-events-none" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Message Queue Backlog</span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-extrabold text-white">
-                    {analyticsData.summary.queuePending}
-                  </span>
-                  <span className="text-xs font-semibold text-amber-400 font-mono">Queued</span>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Message Queue Backlog</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-extrabold text-white">
+                      {analyticsData.summary.queuePending}
+                    </span>
+                    <span className="text-xs font-semibold text-amber-400 font-mono">Queued</span>
+                  </div>
                 </div>
                 <div className="mt-3.5 text-slate-500 text-[10px] leading-relaxed">
                   In-memory queue scheduler backlog, processing round-robin.
                 </div>
               </div>
 
-              {/* Card 4: Avg Speed */}
-              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl">
+              {/* Card 5: Avg Speed */}
+              <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-2xl relative overflow-hidden shadow-xl flex flex-col justify-between">
                 <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full filter blur-2xl pointer-events-none" />
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Mean Processing Speed</span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-extrabold text-white">
-                    {analyticsData.summary.avgSpeedSeconds || '2.0'}
-                  </span>
-                  <span className="text-xs font-medium text-slate-400">sec / msg</span>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Mean Processing Speed</span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-3xl font-extrabold text-white">
+                      {analyticsData.summary.avgSpeedSeconds || '2.0'}
+                    </span>
+                    <span className="text-xs font-medium text-slate-400">sec / msg</span>
+                  </div>
                 </div>
                 <div className="mt-3.5 text-slate-500 text-[10px] leading-relaxed">
                   Calculated response latency per individual thread execution.

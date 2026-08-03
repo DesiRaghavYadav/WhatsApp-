@@ -19,7 +19,13 @@ import {
   Smartphone,
   CheckCircle2,
   Trash2,
-  Plus
+  Plus,
+  Calendar,
+  Clock,
+  Code2,
+  Play,
+  Bookmark,
+  Key
 } from 'lucide-react';
 
 interface StatusBroadcastPageProps {
@@ -150,8 +156,132 @@ export default function StatusBroadcastPage({
     }
   };
 
-  // Fetch initial helper data (leads & groups)
+  // Saved Status Codes State
+  const [saveCodeInput, setSaveCodeInput] = useState<string>('');
+  const [savedCodesList, setSavedCodesList] = useState<any[]>([]);
+  const [isSavingCode, setIsSavingCode] = useState<boolean>(false);
+  const [isLoadingCodes, setIsLoadingCodes] = useState<boolean>(false);
+
+  const fetchSavedCodes = () => {
+    setIsLoadingCodes(true);
+    fetchWithAuth('/api/saved-codes')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && Array.isArray(data.savedCodes)) {
+          setSavedCodesList(data.savedCodes);
+        }
+      })
+      .catch(err => console.error('Error fetching saved codes:', err))
+      .finally(() => setIsLoadingCodes(false));
+  };
+
+  const handleSaveStatusCode = async () => {
+    const cleanCode = saveCodeInput.replace(/\D/g, '').trim();
+    if (cleanCode.length !== 4) {
+      setFeedback({ type: 'error', text: 'Please enter a valid 4-digit numeric code (e.g., 1234).' });
+      return;
+    }
+
+    if (statusType === 'text' && !textContent.trim()) {
+      setFeedback({ type: 'error', text: 'Please write text content before saving status as a code.' });
+      return;
+    }
+    if (statusType !== 'text') {
+      if (mediaSource === 'upload' && !mediaData) {
+        setFeedback({ type: 'error', text: 'Please upload media before saving status as a code.' });
+        return;
+      }
+      if (mediaSource === 'url' && !mediaUrl) {
+        setFeedback({ type: 'error', text: 'Please enter a media URL before saving status as a code.' });
+        return;
+      }
+    }
+
+    const customMentions = mentionsInput
+      .split(',')
+      .map(n => n.trim().replace(/\D/g, ''))
+      .filter(Boolean)
+      .map(num => `${num}@s.whatsapp.net`);
+
+    const finalMentions = (targetType === 'group_members' && tagGroupMembers)
+      ? Array.from(new Set([...customMentions, ...groupMembersList]))
+      : customMentions;
+
+    setIsSavingCode(true);
+    try {
+      const response = await fetchWithAuth('/api/saved-codes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: cleanCode,
+          isStatus: true,
+          recipientType: 'status',
+          statusType,
+          message: textContent,
+          backgroundColor: statusType === 'text' ? selectedBgHex : undefined,
+          font: statusType === 'text' ? selectedFont : undefined,
+          attachmentType: statusType === 'text' ? 'none' : statusType,
+          attachmentUrl: mediaSource === 'url' ? mediaUrl : undefined,
+          attachmentData: mediaSource === 'upload' ? mediaData : undefined,
+          attachmentName: mediaSource === 'upload' ? mediaName : 'status-attachment',
+          sessionIds: selectedSessionIds,
+          statusJidList: getCompiledJids(),
+          mentions: finalMentions
+        })
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setFeedback({ type: 'success', text: `Status post permanently saved with code .${cleanCode}! Type .${cleanCode} in WhatsApp anytime to trigger.` });
+        setSaveCodeInput('');
+        fetchSavedCodes();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to save status code.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error saving status code.' });
+    } finally {
+      setIsSavingCode(false);
+    }
+  };
+
+  const handleRunCode = async (idOrCode: string) => {
+    try {
+      const response = await fetchWithAuth(`/api/saved-codes/trigger/${idOrCode}`, {
+        method: 'POST'
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setFeedback({ type: 'success', text: `Code .${idOrCode} status update broadcasted successfully!` });
+      } else {
+        setFeedback({ type: 'error', text: data.error || `Failed to trigger code .${idOrCode}.` });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleDeleteSavedCode = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this saved code?')) return;
+    try {
+      const response = await fetchWithAuth(`/api/saved-codes/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setFeedback({ type: 'success', text: 'Saved code removed successfully.' });
+        fetchSavedCodes();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to delete saved code.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message });
+    }
+  };
+
+  // Fetch initial helper data (leads, groups & saved codes)
   useEffect(() => {
+    fetchSavedCodes();
+
     // Fetch Leads count
     fetchWithAuth('/api/leads')
       .then(res => res.json())
@@ -330,7 +460,7 @@ export default function StatusBroadcastPage({
     setIsPublishing(true);
     setFeedback(null);
 
-    if (targetType === 'group_members' && sendMode === 'delayed') {
+    if (sendMode === 'delayed' || (startTime && startTime.trim() !== '')) {
       const schedulePayload = {
         sessionIds: selectedSessionIds,
         statusType,
@@ -342,12 +472,13 @@ export default function StatusBroadcastPage({
         attachmentData: mediaSource === 'upload' ? mediaData : undefined,
         attachmentName: mediaSource === 'upload' ? mediaName : 'status-attachment',
         groupMembers: targetJids,
-        groupIds: selectedGroupIds,
-        batchMode,
+        groupIds: targetType === 'group_members' ? selectedGroupIds : [],
+        batchMode: targetType === 'group_members' && batchMode === 'groups' ? 'groups' : 'members',
         delayMinutes,
         secondDelayMinutes: selectedGroupIds.length > 5 ? secondDelayMinutes : undefined,
         batchSize,
-        startTime: startTime || undefined
+        startTime: startTime || undefined,
+        statusJidList: targetJids
       };
 
       try {
@@ -359,7 +490,8 @@ export default function StatusBroadcastPage({
 
         const data = await response.json();
         if (response.ok && data.success) {
-          setFeedback({ type: 'success', text: data.message || 'WhatsApp Status background scheduler activated!' });
+          const scheduleTimeStr = startTime ? new Date(startTime).toLocaleString() : 'in a few seconds';
+          setFeedback({ type: 'success', text: `Status scheduled successfully! Planned launch time: ${scheduleTimeStr}` });
           fetchSchedules();
           setStartTime('');
           if (statusType === 'text') {
@@ -369,7 +501,7 @@ export default function StatusBroadcastPage({
             setTextContent('');
           }
         } else {
-          setFeedback({ type: 'error', text: data.error || 'Failed to initialize background scheduler.' });
+          setFeedback({ type: 'error', text: data.error || 'Failed to initialize background status schedule.' });
         }
       } catch (err: any) {
         setFeedback({ type: 'error', text: err.message || 'Network exception starting status scheduler.' });
@@ -1213,6 +1345,107 @@ export default function StatusBroadcastPage({
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* SAVE STATUS AS 4-DIGIT CODE PANEL */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4 text-left">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <span className="text-xs font-extrabold text-white uppercase tracking-wider block flex items-center gap-1.5">
+                  <Code2 className="w-4 h-4 text-emerald-400" />
+                  <span>Save Status as Permanent 4-Digit Code</span>
+                </span>
+                <p className="text-[10px] text-slate-400">
+                  Save current status composition (text, background color, media, target list & silent mentions) as a 4-digit code. Type <code className="text-emerald-400 font-mono">.1234</code> in WhatsApp anytime to publish!
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 font-mono text-xs font-bold">.</span>
+                <input
+                  type="text"
+                  maxLength={4}
+                  placeholder="1234"
+                  value={saveCodeInput}
+                  onChange={(e) => setSaveCodeInput(e.target.value.replace(/\D/g, ''))}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-7 pr-3 py-2.5 text-xs text-white placeholder-slate-650 outline-none focus:border-emerald-500 font-mono font-bold tracking-widest"
+                />
+              </div>
+              <button
+                onClick={handleSaveStatusCode}
+                disabled={isSavingCode || !saveCodeInput || saveCodeInput.length !== 4}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-all cursor-pointer flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+              >
+                {isSavingCode ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Bookmark className="w-3.5 h-3.5" />
+                )}
+                <span>Save Code .{saveCodeInput || 'XXXX'}</span>
+              </button>
+            </div>
+
+            {/* List of Saved Status Codes */}
+            {savedCodesList.length > 0 && (
+              <div className="pt-3 border-t border-slate-850 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-bold text-slate-400">
+                  <span>Saved Status & Trigger Codes ({savedCodesList.length})</span>
+                  <button
+                    onClick={fetchSavedCodes}
+                    className="text-[10px] text-emerald-400 hover:underline cursor-pointer flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingCodes ? 'animate-spin' : ''}`} /> Refresh
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {savedCodesList.map((sc) => {
+                    const isStatusCode = sc.isStatus || sc.recipientType === 'status';
+                    return (
+                      <div key={sc.id} className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3">
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="bg-emerald-500/20 text-emerald-300 font-mono font-black text-xs px-2 py-0.5 rounded border border-emerald-500/30">
+                              .{sc.code}
+                            </span>
+                            {isStatusCode && (
+                              <span className="text-[9px] bg-purple-500/10 text-purple-300 border border-purple-500/20 px-1.5 py-0.5 rounded font-bold uppercase">
+                                Status Story
+                              </span>
+                            )}
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              Type .{sc.code} in WhatsApp
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-300 truncate">
+                            {sc.message ? sc.message : (sc.attachmentName ? `Attachment: ${sc.attachmentName}` : 'Status broadcast update')}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => handleRunCode(sc.code)}
+                            className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>Run</span>
+                          </button>
+                          <button
+                            onClick={() => handleDeleteSavedCode(sc.id)}
+                            className="p-1 text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
+                            title="Delete Saved Code"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
