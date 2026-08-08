@@ -70,7 +70,8 @@ import {
   Code,
   Gauge,
   Edit2,
-  Target
+  Target,
+  Smile
 } from 'lucide-react';
 
 import {
@@ -94,6 +95,17 @@ interface ConnectionLog {
   timestamp: string;
   message: string;
   type: 'info' | 'error' | 'success';
+}
+
+interface QrSessionHistoryItem {
+  id: string;
+  sessionId: string;
+  sessionName: string;
+  qrBase64?: string | null;
+  pairingCode?: string | null;
+  timestamp: string;
+  hasSavedCredentials?: boolean;
+  userName?: string | null;
 }
 
 interface SentMessage {
@@ -288,6 +300,12 @@ export default function App() {
   const [saveCodeInput, setSaveCodeInput] = useState<string>('');
   const [isSavingCode, setIsSavingCode] = useState<boolean>(false);
 
+  // Reusable Draft Message Templates State (Usable across accounts)
+  const [draftsList, setDraftsList] = useState<any[]>([]);
+  const [draftNameInput, setDraftNameInput] = useState<string>('');
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  const [isSavingDraft, setIsSavingDraft] = useState<boolean>(false);
+
   // Delivery Analytics State
   const [dailyLimitCap, setDailyLimitCap] = useState<number>(() => {
     const saved = localStorage.getItem('wa_daily_limit_cap');
@@ -354,6 +372,95 @@ export default function App() {
   const [isCreatingSession, setIsCreatingSession] = useState<boolean>(false);
   const [showSessionModal, setShowSessionModal] = useState<boolean>(false);
   const [activeLinkSessionId, setActiveLinkSessionId] = useState<string>('primary');
+
+  // QR Session History state
+  const [qrHistory, setQrHistory] = useState<QrSessionHistoryItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('navi_qr_session_history');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Failed to parse saved QR session history', e);
+    }
+    return [];
+  });
+  const [previewQrModal, setPreviewQrModal] = useState<QrSessionHistoryItem | null>(null);
+  const [qrHistorySearch, setQrHistorySearch] = useState<string>('');
+
+  // Explicitly record QR session history when login attempt is made or when session connects
+  const recordAttemptedQr = (sess: any) => {
+    if (!sess || (!sess.qrBase64 && !sess.pairingCode && !sess.hasSavedCredentials && sess.status !== 'connected')) return;
+    setQrHistory((prevHistory) => {
+      const existing = prevHistory.find(
+        (h) =>
+          h.sessionId === sess.id &&
+          ((sess.qrBase64 && h.qrBase64 === sess.qrBase64) ||
+            (sess.pairingCode && h.pairingCode === sess.pairingCode) ||
+            (sess.status === 'connected' && h.status === 'connected'))
+      );
+      if (existing) return prevHistory;
+
+      const newItem: QrSessionHistoryItem = {
+        id: `qrhist_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+        sessionId: sess.id,
+        sessionName: sess.name || sess.id,
+        qrBase64: sess.qrBase64 || null,
+        pairingCode: sess.pairingCode || null,
+        timestamp: new Date().toISOString(),
+        hasSavedCredentials: !!sess.hasSavedCredentials,
+        userName: sess.user?.name || null
+      };
+      const updated = [newItem, ...prevHistory].slice(0, 30);
+      try {
+        localStorage.setItem('navi_qr_session_history', JSON.stringify(updated));
+      } catch (e) {
+        console.error('Failed to save QR session history', e);
+      }
+      return updated;
+    });
+  };
+
+  // Automatically capture ONLY successfully logged in or connected sessions into QR Session History
+  useEffect(() => {
+    if (!Array.isArray(sessionsList) || sessionsList.length === 0) return;
+
+    setQrHistory((prevHistory) => {
+      let updated = [...prevHistory];
+      let changed = false;
+
+      for (const sess of sessionsList) {
+        if (sess.status !== 'connected' && !sess.hasSavedCredentials) continue;
+
+        const existing = updated.find(
+          (h) => h.sessionId === sess.id && (h.userName === sess.user?.name || h.hasSavedCredentials === sess.hasSavedCredentials)
+        );
+
+        if (!existing) {
+          changed = true;
+          const newItem: QrSessionHistoryItem = {
+            id: `qrhist_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+            sessionId: sess.id,
+            sessionName: sess.name || sess.id,
+            qrBase64: sess.qrBase64 || null,
+            pairingCode: sess.pairingCode || null,
+            timestamp: new Date().toISOString(),
+            hasSavedCredentials: !!sess.hasSavedCredentials,
+            userName: sess.user?.name || null
+          };
+          updated = [newItem, ...updated].slice(0, 30);
+        }
+      }
+
+      if (changed) {
+        try {
+          localStorage.setItem('navi_qr_session_history', JSON.stringify(updated));
+        } catch (e) {
+          console.error('Failed to save QR session history', e);
+        }
+        return updated;
+      }
+      return prevHistory;
+    });
+  }, [sessionsList]);
 
   // Saved groups state
   const [savedGroups, setSavedGroups] = useState<any[]>([]);
@@ -438,6 +545,217 @@ export default function App() {
   const [msgType, setMsgType] = useState<'navi-template' | 'text' | 'buttons' | 'template'>('navi-template');
   const [footerText, setFooterText] = useState<string>('Sent via WhatsApp Bridge');
   const [useLegacy, setUseLegacy] = useState<boolean>(true);
+
+  // Multi-Message Sequence State & Timer Slider State
+  const [messagesSequence, setMessagesSequence] = useState<Array<{
+    id: string;
+    text: string;
+    msgType?: 'text' | 'buttons' | 'template';
+    attachmentType?: 'none' | 'image' | 'video' | 'pdf' | 'doc';
+    attachmentSource?: 'url' | 'upload';
+    attachmentUrl?: string;
+    attachmentData?: string;
+    attachmentName?: string;
+    buttons?: ButtonItem[];
+    templateButtons?: TemplateButtonItem[];
+    showMediaConfig?: boolean;
+    showButtonsConfig?: boolean;
+  }>>([
+    { id: 'msg-1', text: '', attachmentType: 'none', buttons: [], templateButtons: [] }
+  ]);
+  const [interMessageDelaySeconds, setInterMessageDelaySeconds] = useState<number>(3);
+
+  const handleAddMessage = () => {
+    setMessagesSequence(prev => [
+      ...prev,
+      {
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+        text: '',
+        attachmentType: 'none',
+        attachmentSource: 'url',
+        attachmentUrl: '',
+        attachmentData: '',
+        attachmentName: '',
+        buttons: [],
+        templateButtons: [],
+        showMediaConfig: false,
+        showButtonsConfig: false
+      }
+    ]);
+  };
+
+  const handleRemoveMessage = (index: number) => {
+    if (messagesSequence.length <= 1) return;
+    setMessagesSequence(prev => {
+      const updated = prev.filter((_, i) => i !== index);
+      if (updated[0]) {
+        setMessage(updated[0].text);
+      }
+      return updated;
+    });
+  };
+
+  const handleSequenceFieldChange = (index: number, field: string, value: any) => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      if (index === 0 && field === 'text') {
+        setMessage(value);
+      }
+      return updated;
+    });
+  };
+
+  const handleSequenceAddButton = (index: number) => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      const current = updated[index];
+      const currentBtns = current.buttons || [];
+      if (currentBtns.length >= 3) return prev;
+      const nextId = `btn-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      updated[index] = {
+        ...current,
+        buttons: [...currentBtns, { id: nextId, text: 'Custom Button' }]
+      };
+      return updated;
+    });
+  };
+
+  const handleSequenceUpdateButtonText = (msgIndex: number, btnIndex: number, text: string) => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      const current = updated[msgIndex];
+      const buttons = [...(current.buttons || [])];
+      buttons[btnIndex] = { ...buttons[btnIndex], text };
+      updated[msgIndex] = { ...current, buttons };
+      return updated;
+    });
+  };
+
+  const handleSequenceRemoveButton = (msgIndex: number, btnIndex: number) => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      const current = updated[msgIndex];
+      const buttons = (current.buttons || []).filter((_, i) => i !== btnIndex);
+      updated[msgIndex] = { ...current, buttons };
+      return updated;
+    });
+  };
+
+  const handleSequenceAddTemplateButton = (msgIndex: number, type: 'url' | 'call' | 'quickReply') => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      const current = updated[msgIndex];
+      const currentTmplBtns = current.templateButtons || [];
+      if (currentTmplBtns.length >= 3) return prev;
+      let newBtn: TemplateButtonItem;
+      if (type === 'url') {
+        newBtn = { type: 'url', text: 'Visit Link', url: 'https://ai.studio/build' };
+      } else if (type === 'call') {
+        newBtn = { type: 'call', text: 'Call Support', phoneNumber: '+1234567890' };
+      } else {
+        newBtn = { type: 'quickReply', text: 'Quick Reply', id: `qr-${Date.now()}` };
+      }
+      updated[msgIndex] = {
+        ...current,
+        templateButtons: [...currentTmplBtns, newBtn]
+      };
+      return updated;
+    });
+  };
+
+  const handleSequenceUpdateTemplateButton = (msgIndex: number, btnIndex: number, field: string, val: string) => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      const current = updated[msgIndex];
+      const tmplBtns = [...(current.templateButtons || [])];
+      tmplBtns[btnIndex] = { ...tmplBtns[btnIndex], [field]: val };
+      updated[msgIndex] = { ...current, templateButtons: tmplBtns };
+      return updated;
+    });
+  };
+
+  const handleSequenceRemoveTemplateButton = (msgIndex: number, btnIndex: number) => {
+    setMessagesSequence(prev => {
+      const updated = [...prev];
+      const current = updated[msgIndex];
+      const tmplBtns = (current.templateButtons || []).filter((_, i) => i !== btnIndex);
+      updated[msgIndex] = { ...current, templateButtons: tmplBtns };
+      return updated;
+    });
+  };
+
+  const handleSequenceFileUpload = (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const base64Data = evt.target?.result as string;
+      let type: 'image' | 'video' | 'pdf' | 'doc' = 'doc';
+      if (file.type.startsWith('image/')) type = 'image';
+      else if (file.type.startsWith('video/')) type = 'video';
+      else if (file.type.includes('pdf')) type = 'pdf';
+
+      setMessagesSequence(prev => {
+        const updated = [...prev];
+        updated[index] = {
+          ...updated[index],
+          attachmentType: type,
+          attachmentSource: 'upload',
+          attachmentName: file.name,
+          attachmentData: base64Data
+        };
+        return updated;
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const buildFormattedSequence = () => {
+    return messagesSequence
+      .filter(m => (m.text && m.text.trim()) || (m.attachmentType && m.attachmentType !== 'none') || (m.buttons && m.buttons.length > 0) || (m.templateButtons && m.templateButtons.length > 0))
+      .map((m, idx) => {
+        const itemMsgType = m.msgType || (m.templateButtons && m.templateButtons.length > 0 ? 'template' : (m.buttons && m.buttons.length > 0 ? 'buttons' : msgType));
+        
+        const itemAttachType = (m.attachmentType && m.attachmentType !== 'none') 
+          ? m.attachmentType 
+          : (idx === 0 ? attachmentType : 'none');
+        
+        const itemAttachUrl = m.attachmentUrl 
+          ? m.attachmentUrl 
+          : (idx === 0 ? (attachmentSource === 'preset' || attachmentSource === 'url' ? attachmentUrl : undefined) : undefined);
+        
+        const itemAttachData = m.attachmentData 
+          ? m.attachmentData 
+          : (idx === 0 ? (attachmentSource === 'upload' ? attachmentData : undefined) : undefined);
+        
+        const itemAttachName = m.attachmentName 
+          ? m.attachmentName 
+          : (idx === 0 ? (attachmentSource === 'upload' ? attachmentName : undefined) : undefined);
+
+        const itemButtons = (m.buttons && m.buttons.length > 0) 
+          ? m.buttons 
+          : (itemMsgType === 'buttons' ? customButtons : undefined);
+        
+        const itemTemplateButtons = (m.templateButtons && m.templateButtons.length > 0) 
+          ? m.templateButtons 
+          : (itemMsgType === 'template' ? templateButtons : undefined);
+
+        return {
+          message: (m.text || '').trim(),
+          msgType: itemMsgType,
+          footer: footerText,
+          buttons: itemButtons,
+          templateButtons: itemTemplateButtons,
+          attachmentType: itemAttachType,
+          attachmentUrl: itemAttachUrl,
+          attachmentData: itemAttachData,
+          attachmentName: itemAttachName,
+          inlineAttachment: true,
+          customDelaySeconds: interMessageDelaySeconds
+        };
+      });
+  };
 
   // Group and Attachment States
   const [recipientType, setRecipientType] = useState<'individual' | 'group'>('individual');
@@ -715,6 +1033,8 @@ export default function App() {
       return;
     }
 
+    const formattedSequence = buildFormattedSequence();
+
     setIsSavingCode(true);
     try {
       const res = await fetchWithAuth('/api/saved-codes', {
@@ -723,6 +1043,8 @@ export default function App() {
           code: cleanDigits,
           phoneNumber,
           message,
+          messagesSequence: formattedSequence.length > 0 ? formattedSequence : undefined,
+          interMessageDelaySeconds,
           recipientType,
           delaySeconds: globalDelaySecondsState,
           tagGroupMembers,
@@ -733,7 +1055,9 @@ export default function App() {
           attachmentUrl,
           attachmentName,
           attachmentData,
-          inlineAttachment
+          inlineAttachment,
+          buttons: customButtons,
+          templateButtons
         })
       });
 
@@ -785,6 +1109,149 @@ export default function App() {
     }
   };
 
+  // Draft Message Templates Handlers (Usable across accounts, supports incomplete messages)
+  const fetchDrafts = async () => {
+    try {
+      const res = await fetchWithAuth('/api/drafts');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.drafts)) {
+          setDraftsList(data.drafts);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching drafts:', e);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    setIsSavingDraft(true);
+    const formattedSequence = buildFormattedSequence();
+
+    try {
+      const res = await fetchWithAuth('/api/drafts', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: activeDraftId,
+          name: draftNameInput || `Draft Template ${draftsList.length + 1}`,
+          phoneNumber,
+          recipientType,
+          message,
+          messagesSequence: formattedSequence.length > 0 ? formattedSequence : undefined,
+          interMessageDelaySeconds,
+          msgType,
+          footer: footerText,
+          attachmentType,
+          attachmentUrl,
+          attachmentName,
+          attachmentData,
+          inlineAttachment,
+          buttons: customButtons,
+          templateButtons,
+          delaySeconds: globalDelaySecondsState,
+          tagGroupMembers,
+          sessionIds: selectedSessionIds
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setDraftsList(data.drafts || []);
+        setActiveDraftId(data.draft?.id || null);
+        setDraftNameInput('');
+        setFeedback({
+          type: 'success',
+          text: `📁 Draft template "${data.draft?.name}" saved successfully! Available across all logged in accounts.`
+        });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to save draft template.' });
+      }
+    } catch (e) {
+      console.error('Error saving draft:', e);
+      setFeedback({ type: 'error', text: 'Network error saving draft template.' });
+    } finally {
+      setIsSavingDraft(false);
+    }
+  };
+
+  const handleLoadDraft = (draft: any) => {
+    if (!draft) return;
+    setPhoneNumber(draft.phoneNumber || '');
+    setRecipientType(draft.recipientType || 'individual');
+    setMessage(draft.message || '');
+
+    if (Array.isArray(draft.messagesSequence) && draft.messagesSequence.length > 0) {
+      setMessagesSequence(
+        draft.messagesSequence.map((item: any, i: number) => ({
+          id: `msg-${i}-${Date.now()}`,
+          text: typeof item === 'string' ? item : (item.message || ''),
+          msgType: typeof item === 'object' ? item.msgType : undefined,
+          attachmentType: typeof item === 'object' ? (item.attachmentType || 'none') : 'none',
+          attachmentSource: typeof item === 'object' && item.attachmentUrl ? 'url' : (item && item.attachmentData ? 'upload' : 'url'),
+          attachmentUrl: typeof item === 'object' ? (item.attachmentUrl || '') : '',
+          attachmentName: typeof item === 'object' ? (item.attachmentName || '') : '',
+          attachmentData: typeof item === 'object' ? (item.attachmentData || '') : '',
+          buttons: typeof item === 'object' && Array.isArray(item.buttons) ? item.buttons : [],
+          templateButtons: typeof item === 'object' && Array.isArray(item.templateButtons) ? item.templateButtons : [],
+          showMediaConfig: typeof item === 'object' && ((item.attachmentType && item.attachmentType !== 'none') || !!item.attachmentUrl || !!item.attachmentData),
+          showButtonsConfig: typeof item === 'object' && ((item.buttons && item.buttons.length > 0) || (item.templateButtons && item.templateButtons.length > 0))
+        }))
+      );
+    } else {
+      setMessagesSequence([{
+        id: 'msg-1',
+        text: draft.message || '',
+        attachmentType: draft.attachmentType || 'none',
+        attachmentUrl: draft.attachmentUrl || '',
+        attachmentName: draft.attachmentName || '',
+        attachmentData: draft.attachmentData || '',
+        buttons: Array.isArray(draft.buttons) ? draft.buttons : [],
+        templateButtons: Array.isArray(draft.templateButtons) ? draft.templateButtons : []
+      }]);
+    }
+
+    if (typeof draft.interMessageDelaySeconds === 'number') {
+      setInterMessageDelaySeconds(draft.interMessageDelaySeconds);
+    }
+
+    setMsgType(draft.msgType || 'text');
+    setFooterText(draft.footer || 'Sent via WhatsApp Bridge');
+    setAttachmentType(draft.attachmentType || 'none');
+    setAttachmentUrl(draft.attachmentUrl || '');
+    setAttachmentName(draft.attachmentName || '');
+    setAttachmentData(draft.attachmentData || '');
+    setInlineAttachment(draft.inlineAttachment ?? true);
+    if (Array.isArray(draft.buttons)) setCustomButtons(draft.buttons);
+    if (Array.isArray(draft.templateButtons)) setTemplateButtons(draft.templateButtons);
+    if (Array.isArray(draft.sessionIds) && draft.sessionIds.length > 0) setSelectedSessionIds(draft.sessionIds);
+    if (typeof draft.delaySeconds === 'number') setGlobalDelaySecondsState(draft.delaySeconds);
+    if (typeof draft.tagGroupMembers === 'boolean') setTagGroupMembers(draft.tagGroupMembers);
+    setActiveDraftId(draft.id);
+    setDraftNameInput(draft.name || '');
+    setFeedback({
+      type: 'success',
+      text: `📋 Draft Template "${draft.name || 'Draft'}" loaded into form! Edit or complete inputs anytime.`
+    });
+  };
+
+  const handleDeleteDraft = async (id: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/drafts/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setDraftsList(data.drafts || []);
+        if (activeDraftId === id) {
+          setActiveDraftId(null);
+        }
+        setFeedback({ type: 'success', text: 'Draft template deleted successfully.' });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to delete draft template.' });
+      }
+    } catch (e) {
+      console.error('Error deleting draft:', e);
+    }
+  };
+
   useEffect(() => {
     if (token) {
       fetchWorkflows();
@@ -792,6 +1259,7 @@ export default function App() {
       fetchBlockedGroups();
       fetchCapturedGroupInvites();
       fetchSavedCodes();
+      fetchDrafts();
     }
   }, [token]);
 
@@ -1223,7 +1691,8 @@ export default function App() {
 
   const fetchQR = async () => {
     try {
-      const res = await fetchWithAuth('/api/qr');
+      const targetSessionId = activeLinkSessionId || 'primary';
+      const res = await fetchWithAuth(`/api/qr?sessionId=${targetSessionId}`);
       if (res.ok) {
         const data = await res.json();
         setQrCode(data.qr);
@@ -1397,16 +1866,80 @@ export default function App() {
     }
   };
 
-  const handleClearQueue = async () => {
+  const handleClearQueue = async (type: 'pending' | 'history' | 'all' | any = 'all') => {
+    const cleanType: 'pending' | 'history' | 'all' = (typeof type === 'string' && ['pending', 'history', 'all'].includes(type)) ? (type as any) : 'all';
+
+    let confirmMsg = 'Are you sure you want to clear the entire message queue?';
+    if (cleanType === 'pending') {
+      confirmMsg = 'Are you sure you want to delete ALL pending queue items?';
+    } else if (cleanType === 'history') {
+      confirmMsg = 'Are you sure you want to clear completed and failed queue history?';
+    }
+    if (!window.confirm(confirmMsg)) return;
+
     try {
-      const res = await fetchWithAuth('/api/queue/clear', { method: 'POST' });
+      const res = await fetchWithAuth('/api/queue/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: cleanType })
+      });
       const data = await res.json();
       if (res.ok && data.success) {
-        setFeedback({ type: 'success', text: 'Message Queue cleared.' });
+        if (Array.isArray(data.queue)) {
+          setQueueItems(data.queue);
+        } else {
+          setQueueItems([]);
+        }
+        setFeedback({
+          type: 'success',
+          text: cleanType === 'pending'
+            ? 'Pending queue items cleared.'
+            : cleanType === 'history'
+              ? 'Queue history cleared.'
+              : 'Message queue cleared.'
+        });
         fetchQueue();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to clear queue.' });
       }
     } catch (e) {
       console.error('Error clearing queue:', e);
+      setFeedback({ type: 'error', text: 'Network error clearing queue.' });
+    }
+  };
+
+  const handleClearMessageHistory = async () => {
+    if (!window.confirm('Are you sure you want to clear ALL message history logs? This action cannot be undone.')) {
+      return;
+    }
+    try {
+      const res = await fetchWithAuth('/api/history/clear', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSentHistory([]);
+        setFeedback({ type: 'success', text: 'All message history logs cleared.' });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to clear message history.' });
+      }
+    } catch (e) {
+      console.error('Error clearing message history:', e);
+      setFeedback({ type: 'error', text: 'Network error clearing message history.' });
+    }
+  };
+
+  const handleDeleteMessageHistoryItem = async (id: string) => {
+    try {
+      const res = await fetchWithAuth(`/api/history/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSentHistory(prev => prev.filter(item => item.id !== id));
+        setFeedback({ type: 'success', text: 'Message history entry deleted.' });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to delete message entry.' });
+      }
+    } catch (e) {
+      console.error('Error deleting message history entry:', e);
+      setFeedback({ type: 'error', text: 'Network error deleting message entry.' });
     }
   };
 
@@ -1568,6 +2101,8 @@ export default function App() {
     setFeedback(null);
 
     try {
+      const formattedSequence = buildFormattedSequence();
+
       const endpoint = isNavi ? '/api/send-template' : '/api/send';
       const bodyPayload = isNavi 
         ? { 
@@ -1581,6 +2116,8 @@ export default function App() {
             phoneNumber: phoneNumber.trim(),
             recipientType,
             message: message,
+            messagesSequence: formattedSequence.length > 0 ? formattedSequence : undefined,
+            interMessageDelaySeconds,
             msgType: msgType,
             footer: footerText,
             buttons: msgType === 'buttons' ? customButtons : undefined,
@@ -2638,6 +3175,199 @@ export default function App() {
                   </div>
                 );
               })()}
+
+              {/* QR Session History Sub-Panel inside Connection Card */}
+              <div className="mt-5 pt-4 border-t border-slate-850/80 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      <Clock className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                        <span>QR Session History</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 bg-slate-900 text-emerald-400 border border-slate-800 rounded-full font-bold">
+                          {qrHistory.length} Recorded
+                        </span>
+                      </h3>
+                      <p className="text-[10px] text-slate-400">
+                        Select & re-authenticate previously generated session QR codes without starting setup from scratch.
+                      </p>
+                    </div>
+                  </div>
+
+                  {qrHistory.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm('Clear all recorded QR session history?')) {
+                          setQrHistory([]);
+                          localStorage.removeItem('navi_qr_session_history');
+                        }
+                      }}
+                      className="text-[10.5px] font-semibold text-slate-400 hover:text-rose-400 flex items-center gap-1.5 px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-rose-500/30 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      <span>Clear History</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Filter/Search if history > 3 */}
+                {qrHistory.length > 3 && (
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Filter QR history by session name or ID..."
+                      value={qrHistorySearch}
+                      onChange={(e) => setQrHistorySearch(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-850 rounded-lg pl-8 pr-3 py-1 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                )}
+
+                {qrHistory.length === 0 ? (
+                  <div className="bg-slate-950/50 border border-dashed border-slate-800/80 rounded-xl p-4 text-center space-y-1">
+                    <QrCode className="w-5 h-5 text-slate-600 mx-auto opacity-70" />
+                    <span className="text-xs text-slate-400 font-semibold block">No QR Session History Yet</span>
+                    <p className="text-[10px] text-slate-500 max-w-sm mx-auto leading-normal">
+                      As QR codes and pairing codes are generated for your WhatsApp sessions, they will be automatically logged here for fast re-authentication.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                    {qrHistory
+                      .filter((item) => {
+                        if (!qrHistorySearch.trim()) return true;
+                        const q = qrHistorySearch.toLowerCase();
+                        return (
+                          item.sessionId.toLowerCase().includes(q) ||
+                          item.sessionName.toLowerCase().includes(q) ||
+                          (item.userName && item.userName.toLowerCase().includes(q))
+                        );
+                      })
+                      .map((item) => {
+                        const matchedSess = sessionsList.find((s) => s.id === item.sessionId);
+                        const isConnected = matchedSess?.status === 'connected';
+                        const isConnecting = isReconnectingSession[item.sessionId] || matchedSess?.status === 'connecting';
+                        const isSelected = activeLinkSessionId === item.sessionId;
+
+                        return (
+                          <div
+                            key={item.id}
+                            className={`p-3 rounded-xl border transition-all text-left flex items-center justify-between gap-3 ${
+                              isSelected
+                                ? 'bg-slate-950/90 border-emerald-500/40 ring-1 ring-emerald-500/20'
+                                : 'bg-slate-950/60 border-slate-850 hover:border-slate-800'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                              {item.qrBase64 ? (
+                                <div
+                                  onClick={() => setPreviewQrModal(item)}
+                                  className="relative group shrink-0 cursor-pointer"
+                                  title="Click to view QR in high resolution"
+                                >
+                                  <img
+                                    src={item.qrBase64}
+                                    alt="QR Code"
+                                    className="w-11 h-11 rounded-lg bg-white p-1 border border-slate-700 object-contain group-hover:scale-105 transition-transform"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                  <div className="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center">
+                                    <Eye className="w-3.5 h-3.5 text-white" />
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="w-11 h-11 rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center shrink-0">
+                                  <QrCode className="w-5 h-5 text-slate-500" />
+                                </div>
+                              )}
+
+                              <div className="min-w-0 flex-1 space-y-0.5">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-xs text-white truncate">
+                                    {item.sessionName}
+                                  </span>
+                                  <span className="text-[9px] font-mono text-slate-500 px-1.5 py-0.2 bg-slate-900 border border-slate-800 rounded">
+                                    ID: {item.sessionId}
+                                  </span>
+                                  {isConnected ? (
+                                    <span className="text-[8.5px] font-bold px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full uppercase">
+                                      Connected
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8.5px] font-bold px-1.5 py-0.2 bg-slate-800 text-slate-400 border border-slate-750 rounded-full uppercase">
+                                      {matchedSess?.status || 'Saved'}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2 text-[10px] text-slate-400 flex-wrap">
+                                  <span className="flex items-center gap-1">
+                                    <Clock className="w-3 h-3 text-slate-500" />
+                                    <span>{new Date(item.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
+                                  </span>
+                                  {item.pairingCode && (
+                                    <span className="font-mono text-amber-400 bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20 text-[9.5px]">
+                                      Code: {item.pairingCode}
+                                    </span>
+                                  )}
+                                  {item.userName && (
+                                    <span className="text-emerald-400 text-[9.5px] truncate">
+                                      User: {item.userName}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveLinkSessionId(item.sessionId);
+                                  handleReconnectSession(item.sessionId);
+                                }}
+                                disabled={isConnecting}
+                                className="px-2.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-slate-950 font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-md shadow-emerald-500/10"
+                                title="Select session and trigger re-authentication with saved credentials"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${isConnecting ? 'animate-spin' : ''}`} />
+                                <span>{isConnecting ? 'Connecting...' : 'Re-authenticate'}</span>
+                              </button>
+
+                              {item.qrBase64 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewQrModal(item)}
+                                  className="p-1.5 text-slate-400 hover:text-white bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg transition-colors cursor-pointer"
+                                  title="View QR Code full size"
+                                >
+                                  <Maximize2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const filtered = qrHistory.filter((h) => h.id !== item.id);
+                                  setQrHistory(filtered);
+                                  localStorage.setItem('navi_qr_session_history', JSON.stringify(filtered));
+                                }}
+                                className="p-1.5 text-slate-500 hover:text-rose-400 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-lg transition-colors cursor-pointer"
+                                title="Remove from history"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Saved Groups Directory */}
@@ -3017,7 +3747,7 @@ export default function App() {
                           {queueItems.length > 0 && (
                             <button
                               type="button"
-                              onClick={handleClearQueue}
+                              onClick={() => handleClearQueue('all')}
                               className="text-xs text-rose-400 hover:text-rose-300 font-bold uppercase transition-colors cursor-pointer"
                             >
                               Clear
@@ -3382,27 +4112,346 @@ export default function App() {
                         </div>
                       </div>
                     ) : (
-                      <div className="space-y-1.5">
+                      <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <label htmlFor="msg-input" className="text-xs font-bold text-slate-300 uppercase tracking-wide">
-                            Message Body
-                          </label>
-                          {isLoadingLinkPreview && (
-                            <div className="flex items-center gap-1.5 text-xs text-emerald-400 animate-pulse">
-                              <RefreshCw className="w-3 h-3 animate-spin" />
-                              <span className="font-mono text-[11px]">Generating link preview...</span>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-300 uppercase tracking-wide flex items-center gap-1.5">
+                              <MessageSquare className="w-4 h-4 text-emerald-400" />
+                              <span>Messages Sequence ({messagesSequence.length})</span>
+                            </span>
+                            {messagesSequence.length > 1 && (
+                              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20 font-semibold">
+                                Multi-Message Mode
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {isLoadingLinkPreview && (
+                              <div className="flex items-center gap-1.5 text-xs text-emerald-400 animate-pulse">
+                                <RefreshCw className="w-3 h-3 animate-spin" />
+                                <span className="font-mono text-[11px]">Generating link preview...</span>
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={handleAddMessage}
+                              className="px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 text-xs font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer shadow-sm"
+                              title="Add another message to sequence"
+                            >
+                              <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Add Message</span>
+                            </button>
+                          </div>
                         </div>
-                        <textarea
-                          id="msg-input"
-                          required
-                          rows={3}
-                          placeholder="Type your main text notification body or paste link here..."
-                          value={message}
-                          onChange={(e) => setMessage(e.target.value)}
-                          className="w-full bg-slate-950/80 border border-slate-850 hover:border-slate-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 outline-none transition-colors resize-none"
-                        />
+
+                        <div className="space-y-3">
+                          {messagesSequence.map((msgItem, index) => (
+                            <div key={msgItem.id || index} className="p-3.5 bg-slate-950/90 border border-slate-850 hover:border-slate-800 rounded-xl space-y-3 transition-all shadow-md">
+                              {/* Sequence Item Header */}
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-[11px] flex items-center justify-center font-bold border border-emerald-500/30">
+                                    {index + 1}
+                                  </span>
+                                  <span className="text-xs font-bold text-slate-300">Message #{index + 1}</span>
+
+                                  {/* Badges for custom media attached */}
+                                  {msgItem.attachmentType && msgItem.attachmentType !== 'none' && (
+                                    <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-teal-500/15 text-teal-300 border border-teal-500/30 font-semibold flex items-center gap-1">
+                                      <Paperclip className="w-3 h-3 text-teal-400" />
+                                      <span>{msgItem.attachmentType.toUpperCase()}</span>
+                                    </span>
+                                  )}
+
+                                  {/* Badges for Quick Reply buttons attached */}
+                                  {msgItem.buttons && msgItem.buttons.length > 0 && (
+                                    <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold flex items-center gap-1">
+                                      <Smile className="w-3 h-3 text-emerald-400" />
+                                      <span>{msgItem.buttons.length} Buttons</span>
+                                    </span>
+                                  )}
+
+                                  {/* Badges for Template CTA Link buttons attached */}
+                                  {msgItem.templateButtons && msgItem.templateButtons.length > 0 && (
+                                    <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-semibold flex items-center gap-1">
+                                      <Link2 className="w-3 h-3 text-indigo-400" />
+                                      <span>{msgItem.templateButtons.length} CTA Links</span>
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-1.5">
+                                  {/* Toggle Media drawer for this specific message */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSequenceFieldChange(index, 'showMediaConfig', !msgItem.showMediaConfig)}
+                                    className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-all flex items-center gap-1 cursor-pointer ${
+                                      msgItem.showMediaConfig || (msgItem.attachmentType && msgItem.attachmentType !== 'none')
+                                        ? 'bg-teal-500/20 text-teal-300 border-teal-500/40 font-bold shadow-sm'
+                                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
+                                    }`}
+                                    title="Attach custom Image, Video, or Document to this specific message"
+                                  >
+                                    <Paperclip className="w-3.5 h-3.5" />
+                                    <span>+ Media</span>
+                                  </button>
+
+                                  {/* Toggle Buttons/Links drawer for this specific message */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSequenceFieldChange(index, 'showButtonsConfig', !msgItem.showButtonsConfig)}
+                                    className={`px-2.5 py-1 text-[11px] font-medium rounded-lg border transition-all flex items-center gap-1 cursor-pointer ${
+                                      msgItem.showButtonsConfig || (msgItem.buttons && msgItem.buttons.length > 0) || (msgItem.templateButtons && msgItem.templateButtons.length > 0)
+                                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-bold shadow-sm'
+                                        : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white hover:border-slate-700'
+                                    }`}
+                                    title="Add Quick Reply buttons or CTA Link/Call buttons to this message"
+                                  >
+                                    <Smile className="w-3.5 h-3.5" />
+                                    <span>+ Buttons/Links</span>
+                                  </button>
+
+                                  {/* Remove Message Button */}
+                                  {messagesSequence.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveMessage(index)}
+                                      className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
+                                      title="Remove this message from sequence"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Textarea for message text & links */}
+                              <textarea
+                                required={index === 0 && attachmentType === 'none' && (!msgItem.attachmentType || msgItem.attachmentType === 'none')}
+                                rows={index === 0 ? 3 : 2}
+                                placeholder={`Type message #${index + 1} text body, promo info, or paste link here...`}
+                                value={msgItem.text}
+                                onChange={(e) => handleSequenceFieldChange(index, 'text', e.target.value)}
+                                className="w-full bg-slate-900/90 border border-slate-850 hover:border-slate-700 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 outline-none transition-colors resize-none"
+                              />
+
+                              {/* Drawer: Media Attachment Configuration */}
+                              {msgItem.showMediaConfig && (
+                                <div className="p-3 bg-slate-900/90 border border-teal-500/35 rounded-xl space-y-2.5 animate-fadeIn">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-bold text-teal-300 uppercase tracking-wide flex items-center gap-1.5">
+                                      <Paperclip className="w-3.5 h-3.5 text-teal-400" />
+                                      <span>Message #{index + 1} Dedicated Media Attachment</span>
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-mono">Image / Video / Document</span>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                      <label className="text-[10px] text-slate-400 font-medium block mb-1">Media Type</label>
+                                      <select
+                                        value={msgItem.attachmentType || 'none'}
+                                        onChange={(e) => handleSequenceFieldChange(index, 'attachmentType', e.target.value)}
+                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white outline-none cursor-pointer"
+                                      >
+                                        <option value="none">No Media (Text Only)</option>
+                                        <option value="image">🖼️ Image (JPEG/PNG)</option>
+                                        <option value="video">🎥 Video (MP4)</option>
+                                        <option value="pdf">📄 PDF Document</option>
+                                        <option value="doc">📁 Word / Document</option>
+                                      </select>
+                                    </div>
+
+                                    <div>
+                                      <label className="text-[10px] text-slate-400 font-medium block mb-1">Media Source</label>
+                                      <select
+                                        value={msgItem.attachmentSource || 'url'}
+                                        onChange={(e) => handleSequenceFieldChange(index, 'attachmentSource', e.target.value)}
+                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1.5 text-xs text-white outline-none cursor-pointer"
+                                      >
+                                        <option value="url">🔗 Remote Media Link URL</option>
+                                        <option value="upload">💻 Upload Local File</option>
+                                      </select>
+                                    </div>
+                                  </div>
+
+                                  {msgItem.attachmentType && msgItem.attachmentType !== 'none' && (
+                                    <div className="pt-1">
+                                      {msgItem.attachmentSource === 'upload' ? (
+                                        <div>
+                                          <label className="text-[10px] text-slate-400 font-medium block mb-1">Upload File for Msg #{index + 1}</label>
+                                          <input
+                                            type="file"
+                                            onChange={(e) => handleSequenceFileUpload(index, e)}
+                                            className="w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-teal-500/20 file:text-teal-300 hover:file:bg-teal-500/30 cursor-pointer"
+                                          />
+                                          {msgItem.attachmentName && (
+                                            <span className="text-[10px] font-mono text-teal-400 block mt-1">
+                                              Selected File: {msgItem.attachmentName}
+                                            </span>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <div>
+                                          <label className="text-[10px] text-slate-400 font-medium block mb-1">Direct Media URL</label>
+                                          <input
+                                            type="text"
+                                            placeholder="https://example.com/image.jpg or video.mp4 or document.pdf"
+                                            value={msgItem.attachmentUrl || ''}
+                                            onChange={(e) => handleSequenceFieldChange(index, 'attachmentUrl', e.target.value)}
+                                            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-650 outline-none font-mono"
+                                          />
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Drawer: Custom Interactive Buttons & CTA Links */}
+                              {msgItem.showButtonsConfig && (
+                                <div className="p-3 bg-slate-900/90 border border-emerald-500/35 rounded-xl space-y-3 animate-fadeIn">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-bold text-emerald-300 uppercase tracking-wide flex items-center gap-1.5">
+                                      <Smile className="w-3.5 h-3.5 text-emerald-400" />
+                                      <span>Message #{index + 1} Interactive Buttons & Links</span>
+                                    </span>
+                                  </div>
+
+                                  {/* Quick Reply Buttons */}
+                                  <div className="space-y-2 border-b border-slate-850 pb-2.5">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] font-bold text-slate-300 uppercase">Quick Reply Text Buttons ({msgItem.buttons?.length || 0}/3)</span>
+                                      {(msgItem.buttons?.length || 0) < 3 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSequenceAddButton(index)}
+                                          className="text-[10px] px-2 py-0.5 bg-emerald-500/15 text-emerald-300 rounded border border-emerald-500/30 hover:bg-emerald-500/25 cursor-pointer flex items-center gap-1"
+                                        >
+                                          <Plus className="w-3 h-3 text-emerald-400" />
+                                          <span>Add Button</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                    {msgItem.buttons && msgItem.buttons.map((btn, bIdx) => (
+                                      <div key={btn.id || bIdx} className="flex items-center gap-2">
+                                        <input
+                                          type="text"
+                                          placeholder={`Button #${bIdx + 1} Title`}
+                                          value={btn.text}
+                                          onChange={(e) => handleSequenceUpdateButtonText(index, bIdx, e.target.value)}
+                                          className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white outline-none"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSequenceRemoveButton(index, bIdx)}
+                                          className="p-1 text-slate-500 hover:text-rose-400 cursor-pointer"
+                                          title="Remove button"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {/* Template CTA Link / Call Buttons */}
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] font-bold text-slate-300 uppercase">CTA Link & Call Phone Buttons ({msgItem.templateButtons?.length || 0}/3)</span>
+                                      {(msgItem.templateButtons?.length || 0) < 3 && (
+                                        <div className="flex items-center gap-1.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSequenceAddTemplateButton(index, 'url')}
+                                            className="text-[10px] px-2 py-0.5 bg-indigo-500/15 text-indigo-300 rounded border border-indigo-500/30 hover:bg-indigo-500/25 cursor-pointer flex items-center gap-1"
+                                          >
+                                            <Plus className="w-3 h-3 text-indigo-400" />
+                                            <span>+ URL Link</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSequenceAddTemplateButton(index, 'call')}
+                                            className="text-[10px] px-2 py-0.5 bg-indigo-500/15 text-indigo-300 rounded border border-indigo-500/30 hover:bg-indigo-500/25 cursor-pointer flex items-center gap-1"
+                                          >
+                                            <Plus className="w-3 h-3 text-indigo-400" />
+                                            <span>+ Call</span>
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                    {msgItem.templateButtons && msgItem.templateButtons.map((tmplBtn, tIdx) => (
+                                      <div key={tIdx} className="p-2.5 bg-slate-950 rounded-lg border border-slate-800 space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-[10px] font-mono text-indigo-400 uppercase font-bold">
+                                            {tmplBtn.type === 'url' ? '🔗 URL Link Button' : tmplBtn.type === 'call' ? '📞 Call Phone Button' : '💬 Quick Button'}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSequenceRemoveTemplateButton(index, tIdx)}
+                                            className="text-slate-500 hover:text-rose-400 cursor-pointer"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <input
+                                            type="text"
+                                            placeholder="Button Title (e.g. Visit Website)"
+                                            value={tmplBtn.text}
+                                            onChange={(e) => handleSequenceUpdateTemplateButton(index, tIdx, 'text', e.target.value)}
+                                            className="bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs text-white outline-none"
+                                          />
+                                          {tmplBtn.type === 'url' && (
+                                            <input
+                                              type="text"
+                                              placeholder="https://website.com"
+                                              value={tmplBtn.url || ''}
+                                              onChange={(e) => handleSequenceUpdateTemplateButton(index, tIdx, 'url', e.target.value)}
+                                              className="bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs text-white outline-none font-mono"
+                                            />
+                                          )}
+                                          {tmplBtn.type === 'call' && (
+                                            <input
+                                              type="text"
+                                              placeholder="+1234567890"
+                                              value={tmplBtn.phoneNumber || ''}
+                                              onChange={(e) => handleSequenceUpdateTemplateButton(index, tIdx, 'phoneNumber', e.target.value)}
+                                              className="bg-slate-900 border border-slate-800 rounded px-2.5 py-1 text-xs text-white outline-none font-mono"
+                                            />
+                                          )}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Inter-Message Delay Timer Slider */}
+                        <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-850 space-y-2">
+                          <div className="flex items-center justify-between text-xs font-semibold">
+                            <span className="text-slate-300 flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-teal-400" />
+                              <span>Inter-Message Delay (Timer Slider)</span>
+                            </span>
+                            <span className="text-teal-400 font-mono font-bold bg-teal-500/10 px-2.5 py-0.5 rounded border border-teal-500/20 text-[11px]">
+                              {interMessageDelaySeconds}s delay
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="60"
+                            value={interMessageDelaySeconds}
+                            onChange={(e) => setInterMessageDelaySeconds(parseInt(e.target.value) || 0)}
+                            className="w-full accent-teal-500 bg-slate-900 h-1.5 rounded-lg cursor-pointer"
+                          />
+                          <span className="text-[9.5px] text-slate-400 block leading-relaxed">
+                            Controls time pause between consecutive messages to each ID. Message #1 is sent, then after <strong className="text-teal-400 font-mono">{interMessageDelaySeconds}s</strong> delay Message #2 is sent to the same ID before moving to the next target ID.
+                          </span>
+                        </div>
 
                         {/* WhatsApp Web Style Automatic Live Link Preview Card */}
                         {liveLinkPreview && (
@@ -4000,6 +5049,107 @@ export default function App() {
                       </p>
                     </div>
 
+                    {/* Save as Reusable Draft Template Section */}
+                    <div className="pt-4 border-t border-slate-850 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-white flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-teal-400" />
+                          <span>Save as Reusable Draft Template</span>
+                        </span>
+                        <span className="text-[10px] text-teal-400 font-mono bg-teal-500/10 px-2 py-0.5 rounded border border-teal-500/20 font-semibold">
+                          Usable across accounts
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center">
+                        <div className="sm:col-span-7 relative">
+                          <input
+                            type="text"
+                            placeholder="Draft Name (e.g. Promo Template)"
+                            value={draftNameInput}
+                            onChange={(e) => setDraftNameInput(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 focus:border-teal-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none transition-colors"
+                          />
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={isSavingDraft}
+                          onClick={handleSaveDraft}
+                          className="sm:col-span-5 flex items-center justify-center gap-1.5 py-2 px-3 bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-md shadow-teal-500/10"
+                        >
+                          {isSavingDraft ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          <span>{activeDraftId ? 'Update Draft' : 'Save Draft'}</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Saves message text, buttons, templates, and attachments as a reusable draft template for any logged-in account (incomplete fields allowed).
+                      </p>
+                    </div>
+
+                    {/* Reusable Draft Templates List Card */}
+                    {draftsList.length > 0 && (
+                      <div className="pt-3 border-t border-slate-850 space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5 uppercase tracking-wider">
+                            <FileText className="w-3.5 h-3.5 text-teal-400" />
+                            <span>Saved Draft Templates ({draftsList.length})</span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-mono">Multi-Account Drafts</span>
+                        </div>
+
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                          {draftsList.map((dt) => (
+                            <div key={dt.id} className="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                              <div className="space-y-1 flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="px-2 py-0.5 bg-teal-500/15 text-teal-400 font-bold text-xs rounded border border-teal-500/30">
+                                    {dt.name || 'Draft'}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono">
+                                    {dt.msgType || 'text'}
+                                  </span>
+                                  {!dt.phoneNumber && (
+                                    <span className="text-[10px] text-amber-400/80 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                      No recipient (Fill on load)
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-300 truncate font-sans">
+                                  {dt.message || dt.attachmentName || '(Empty message body)'}
+                                </p>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleLoadDraft(dt)}
+                                  className="px-2.5 py-1 bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 border border-teal-500/30 text-[10.5px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                                  title="Load draft values into message form"
+                                >
+                                  <FileText className="w-3 h-3 text-teal-400" />
+                                  <span>Load Draft</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteDraft(dt.id)}
+                                  className="p-1.5 hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 rounded-lg transition-colors cursor-pointer"
+                                  title="Delete draft template"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Permanent Saved Codes List Card */}
                     {savedCodes.length > 0 && (
                       <div className="pt-3 border-t border-slate-850 space-y-2.5">
@@ -4236,8 +5386,23 @@ export default function App() {
               {/* History Tab */}
               {activeTab === 'history' && (
                 <div id="panel-history" className="space-y-4">
-                  {/* Firestore Connection Status Banner on Message Sent Screen */}
-                  <FirestoreStatusCard variant="full" title="Message Logs & Firestore Backup Status" />
+                  {/* Firestore Connection Status Banner & Clear History Action Bar */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex-1">
+                      <FirestoreStatusCard variant="full" title="Message Logs & Firestore Backup Status" />
+                    </div>
+                    {sentHistory.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleClearMessageHistory}
+                        className="self-start sm:self-center px-3.5 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 cursor-pointer shadow-md shadow-rose-500/5"
+                        title="Clear all recorded message history logs"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>Clear All Message History ({sentHistory.length})</span>
+                      </button>
+                    )}
+                  </div>
 
                   {sentHistory.length === 0 ? (
                     <div className="text-center py-10">
@@ -4255,7 +5420,8 @@ export default function App() {
                             <th className="pb-3 pl-2">Recipient JID</th>
                             <th className="pb-3">Sent Payload Content</th>
                             <th className="pb-3">Timestamp</th>
-                            <th className="pb-3 text-right pr-2">Status</th>
+                            <th className="pb-3 text-center">Status</th>
+                            <th className="pb-3 text-right pr-2">Actions</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-850">
@@ -4271,7 +5437,7 @@ export default function App() {
                                 <Clock className="w-3.5 h-3.5 text-slate-500" />
                                 {new Date(msg.timestamp).toLocaleString()}
                               </td>
-                              <td className="py-3.5 text-right pr-2">
+                              <td className="py-3.5 text-center">
                                 <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-medium border ${
                                   msg.status === 'sent' 
                                     ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' 
@@ -4290,8 +5456,18 @@ export default function App() {
                                   )}
                                 </span>
                                 {msg.error && (
-                                  <p className="text-[10px] text-rose-400 mt-1 italic max-w-xs ml-auto leading-normal">{msg.error}</p>
+                                  <p className="text-[10px] text-rose-400 mt-1 italic max-w-xs mx-auto leading-normal">{msg.error}</p>
                                 )}
+                              </td>
+                              <td className="py-3.5 text-right pr-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteMessageHistoryItem(msg.id)}
+                                  className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg border border-transparent hover:border-rose-500/20 transition-all cursor-pointer"
+                                  title="Delete message history entry"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </td>
                             </tr>
                           ))}
@@ -4485,6 +5661,7 @@ export default function App() {
             handleTogglePauseSession={handleTogglePauseSession}
             handleQueueReorder={handleQueueReorder}
             globalDelaySecondsState={globalDelaySecondsState}
+            handleClearQueue={handleClearQueue}
           />
         ) : currentView === 'settings' ? (
           <div className="space-y-8 animate-fadeIn">
@@ -6056,6 +7233,92 @@ export default function App() {
               })()}
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* QR PREVIEW & RE-AUTHENTICATE MODAL */}
+      <AnimatePresence>
+        {previewQrModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-full max-w-sm shadow-2xl relative text-center space-y-4 text-left"
+            >
+              <button
+                onClick={() => setPreviewQrModal(null)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="text-center">
+                <h3 className="text-base font-bold text-white flex items-center justify-center gap-2">
+                  <QrCode className="w-5 h-5 text-emerald-400" />
+                  <span>QR Session History</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Session: <span className="text-emerald-400 font-semibold">{previewQrModal.sessionName}</span> ({previewQrModal.sessionId})
+                </p>
+              </div>
+
+              {previewQrModal.qrBase64 ? (
+                <div className="p-3 bg-white rounded-xl border border-slate-700 shadow-xl flex items-center justify-center mx-auto relative w-fit">
+                  <img
+                    src={previewQrModal.qrBase64}
+                    alt="WhatsApp QR Code"
+                    className="w-52 h-52 block mx-auto object-contain"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="absolute top-0 left-0 right-0 h-1 bg-emerald-500 opacity-60 animate-bounce" />
+                </div>
+              ) : (
+                <div className="p-8 bg-slate-950 rounded-xl border border-slate-800 text-slate-500 text-xs font-mono text-center">
+                  No QR image available for this snapshot
+                </div>
+              )}
+
+              <div className="text-[10.5px] text-slate-400 leading-snug bg-slate-950 p-2.5 rounded-xl border border-slate-850 space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Captured At:</span>
+                  <span className="text-slate-300 font-mono">
+                    {new Date(previewQrModal.timestamp).toLocaleString()}
+                  </span>
+                </div>
+                {previewQrModal.pairingCode && (
+                  <div className="flex justify-between">
+                    <span className="text-slate-500">Pairing Code:</span>
+                    <span className="text-amber-400 font-mono font-bold">
+                      {previewQrModal.pairingCode}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveLinkSessionId(previewQrModal.sessionId);
+                    handleReconnectSession(previewQrModal.sessionId);
+                    setPreviewQrModal(null);
+                  }}
+                  className="flex-1 py-2 px-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/10"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Re-authenticate Session</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewQrModal(null)}
+                  className="py-2 px-3 bg-slate-800 hover:bg-slate-750 text-slate-300 font-semibold text-xs rounded-xl transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 

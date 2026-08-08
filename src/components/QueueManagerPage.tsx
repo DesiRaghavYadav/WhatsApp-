@@ -25,6 +25,7 @@ interface QueueManagerPageProps {
   handleTogglePauseSession: (sessionId: string) => Promise<void>;
   handleQueueReorder: (itemId: string, action: 'up' | 'down' | 'top' | 'delete') => Promise<void>;
   globalDelaySecondsState: number;
+  handleClearQueue?: (type?: 'pending' | 'history' | 'all') => Promise<void>;
 }
 
 export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
@@ -33,12 +34,13 @@ export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
   sessionsList,
   handleTogglePauseSession,
   handleQueueReorder,
-  globalDelaySecondsState
+  globalDelaySecondsState,
+  handleClearQueue
 }) => {
   // Filter queue items by status
   const pendingItems = queueItems.filter(item => item.status === 'pending');
   const activeItems = queueItems.filter(item => item.status === 'sending');
-  const pastItems = queueItems.filter(item => item.status === 'completed' || item.status === 'failed');
+  const pastItems = queueItems.filter(item => item.status === 'completed' || item.status === 'sent' || item.status === 'failed');
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -163,18 +165,54 @@ export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
       <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
         <div className="absolute top-0 left-0 w-1.5 h-full bg-teal-500" />
         
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-850">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-850">
           <div>
             <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider">
               <Zap className="w-4.5 h-4.5 text-teal-400" />
               <span>Prioritize & Re-order Message Queue</span>
             </h3>
             <p className="text-xs text-slate-400 mt-1">
-              Drag, boost, or delete individual pending message orders to customize sequence schedules.
+              Boost, re-order, or delete individual pending messages or clear entire queue categories.
             </p>
           </div>
-          <div className="text-xs font-mono text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-850">
-            Total Messages in Pipeline: <span className="text-teal-400 font-bold">{queueItems.length}</span>
+
+          {/* Delete / Clear Queue Action Buttons Toolbar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {pendingItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleClearQueue && handleClearQueue('pending')}
+                className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                title="Delete all pending messages waiting in queue"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Pending Queue ({pendingItems.length})</span>
+              </button>
+            )}
+
+            {pastItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleClearQueue && handleClearQueue('history')}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-300 border border-slate-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                title="Clear completed and failed messages from queue history"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+                <span>Clear Queue History ({pastItems.length})</span>
+              </button>
+            )}
+
+            {queueItems.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleClearQueue && handleClearQueue('all')}
+                className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+                title="Purge all items from the message queue"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete All Queue ({queueItems.length})</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -392,10 +430,20 @@ export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
                                   <Trash2 className="w-4 h-4" />
                                 </button>
                               </>
-                            ) : (
-                              <span className="text-[11px] text-slate-600 italic select-none">
-                                Immutable (Active/Past)
+                            ) : isSending ? (
+                              <span className="text-[10px] font-bold text-teal-400 bg-teal-500/10 px-2 py-1 rounded-md border border-teal-500/20">
+                                Dispatching...
                               </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleQueueReorder(item.id, 'delete')}
+                                title="Remove from Queue History"
+                                className="p-1.5 rounded-lg bg-rose-500/5 hover:bg-rose-500/15 text-rose-400 border border-rose-500/20 transition-all cursor-pointer flex items-center gap-1 text-[10px] font-bold"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Delete Record</span>
+                              </button>
                             )}
                           </div>
                         </td>

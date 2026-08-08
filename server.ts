@@ -4,7 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
 import { createServer as createViteServer } from 'vite';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo } from '@queenanya/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -87,9 +87,25 @@ if (fs.existsSync(firebaseConfigPath)) {
 }
 
 // Helper functions to mirror changes to Firestore database
-function syncFileToFirestore(filePath: any, data: any) {
+function normalizeFilePath(filePath: any): string | null {
+  if (filePath == null) return null;
+  if (Buffer.isBuffer(filePath)) {
+    return filePath.toString('utf-8');
+  }
+  if (typeof filePath === 'string') {
+    return filePath;
+  }
+  if (typeof filePath.toString === 'function') {
+    return filePath.toString();
+  }
+  return null;
+}
+
+function syncFileToFirestore(rawFilePath: any, data: any) {
   if (!db || isQuotaExceeded) return;
   try {
+    const filePath = normalizeFilePath(rawFilePath);
+    if (!filePath) return;
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep) || relativePath === 'data') {
@@ -123,9 +139,11 @@ function syncFileToFirestore(filePath: any, data: any) {
   }
 }
 
-function syncDeleteToFirestore(filePath: any) {
+function syncDeleteToFirestore(rawFilePath: any) {
   if (!db || isQuotaExceeded) return;
   try {
+    const filePath = normalizeFilePath(rawFilePath);
+    if (!filePath) return;
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep)) {
@@ -147,9 +165,11 @@ function syncDeleteToFirestore(filePath: any) {
   }
 }
 
-function syncDirDeleteToFirestore(filePath: any) {
+function syncDirDeleteToFirestore(rawFilePath: any) {
   if (!db || isQuotaExceeded) return;
   try {
+    const filePath = normalizeFilePath(rawFilePath);
+    if (!filePath) return;
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep)) {
@@ -574,12 +594,26 @@ function loadUserGroupInvites(username: string): CapturedGroupInvite[] {
 function saveCapturedGroupInvite(username: string, invite: CapturedGroupInvite) {
   try {
     const invites = loadUserGroupInvites(username);
-    const isDuplicate = invites.some(i => i.code === invite.code && i.senderJid === invite.senderJid && (Date.now() - new Date(i.savedAt).getTime() < 60000));
-    if (!isDuplicate) {
-      invites.push(invite);
-      const filePath = path.join(getUserDir(username), 'group.json');
+    const existingIndex = invites.findIndex(i => i.code === invite.code);
+    const filePath = path.join(getUserDir(username), 'group.json');
+    
+    if (existingIndex > -1) {
+      const existing = invites[existingIndex];
+      const updatedName = (invite.groupName && invite.groupName !== 'Unknown Group') ? invite.groupName : existing.groupName;
+      invites[existingIndex] = {
+        ...existing,
+        ...invite,
+        groupName: updatedName,
+        groupDescription: invite.groupDescription || existing.groupDescription,
+        groupSize: invite.groupSize || existing.groupSize,
+        savedAt: new Date().toISOString()
+      };
       fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
-      addLog(username, `📂 Group Link Captured: Saved details for WhatsApp group "${invite.groupName}" to group.json`, 'success');
+      addLog(username, `📂 Group Link Details Updated: "${updatedName}" (${invite.code}) in group.json`, 'success');
+    } else {
+      invites.push(invite);
+      fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
+      addLog(username, `📂 Group Link Captured: Saved "${invite.groupName}" (${invite.code}) to group.json`, 'success');
     }
   } catch (err: any) {
     console.error('Error saving captured group invite:', err);
@@ -718,6 +752,8 @@ interface QueueItem {
   tagJobBatchIndex?: number;
   tagJobBatchCount?: number;
   scheduledAt?: string;
+  customDelaySeconds?: number;
+  sequenceIndex?: number;
 }
 
 function loadUserPausedQueues(username: string): string[] {
@@ -934,12 +970,14 @@ async function processUserQueue(username: string) {
         (!i.scheduledAt || i.scheduledAt <= new Date().toISOString())
       );
       if (hasReadyPending) {
-        // Generate random offset between -5 and +10 seconds
-        const randomOffset = Math.floor(Math.random() * 16) - 5; // -5 to +10 seconds
-        // Ensure delay is at least 2 seconds to maintain connection safety
-        const actualDelay = Math.max(2, globalDelaySeconds + randomOffset);
+        const itemDelay = (typeof item.customDelaySeconds === 'number' && item.customDelaySeconds >= 0)
+          ? item.customDelaySeconds
+          : globalDelaySeconds;
+        // Generate small random offset between -1 and +2 seconds for natural variation
+        const randomOffset = Math.floor(Math.random() * 4) - 1;
+        const actualDelay = Math.max(1, itemDelay + randomOffset);
         
-        addLog(username, `Queue: Waiting ${actualDelay}s delay to throttle outgoing messages (Base delay: ${globalDelaySeconds}s, applied ${randomOffset >= 0 ? '+' : ''}${randomOffset}s natural human-like variation)...`, 'info');
+        addLog(username, `Queue: Waiting ${actualDelay}s delay before next message dispatch (Base delay: ${itemDelay}s, applied ${randomOffset >= 0 ? '+' : ''}${randomOffset}s variation)...`, 'info');
         await new Promise(resolve => setTimeout(resolve, actualDelay * 1000));
       }
     }
@@ -1129,19 +1167,37 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
     addLog(username, `Queue: Using pre-batched mentions of ${mentions.length} members for ${targetJid}`, 'info');
   } else if (item.tagGroupMembers && targetJid.endsWith('@g.us')) {
     try {
-      addLog(username, `Queue: Fetching group participants to tag in background for ${targetJid}...`, 'info');
-      const metadata = await sockInstance.groupMetadata(targetJid);
-      if (metadata && metadata.participants) {
-        const myJid = sockInstance.user?.id ? (sockInstance.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : null;
-        const cleaned = cleanParticipantJidList(metadata.participants);
-        mentions = cleaned.filter((pJid: string) => {
-          const isMe = myJid && (pJid.split('@')[0] === myJid.split('@')[0]);
-          return !isMe;
-        });
-        addLog(username, `Queue: Tagged ${mentions.length} members in background for ${targetJid}`, 'info');
+      addLog(username, `Queue: Resolving group participants for tagging in ${targetJid}...`, 'info');
+      
+      let participants: string[] = [];
+      const savedGroups = loadUserSavedGroups(username);
+      const matchGroup = savedGroups.find((g: any) => g.jid === targetJid);
+      
+      if (matchGroup && Array.isArray(matchGroup.participants) && matchGroup.participants.length > 0) {
+        participants = cleanParticipantJidList(matchGroup.participants);
+        addLog(username, `Queue: Loaded ${participants.length} cached members from saved_groups for ${targetJid}`, 'info');
       }
+
+      if (participants.length === 0) {
+        addLog(username, `Queue: Fetching fresh metadata from WhatsApp for ${targetJid}...`, 'info');
+        const metadata = await sockInstance.groupMetadata(targetJid);
+        if (metadata && metadata.participants) {
+          participants = cleanParticipantJidList(metadata.participants);
+          saveUserGroupDetails(username, targetJid, metadata.subject || 'Group', item.sessionId, {
+            participants,
+            memberCount: participants.length
+          });
+        }
+      }
+
+      const myJid = sockInstance.user?.id ? (sockInstance.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : null;
+      mentions = participants.filter((pJid: string) => {
+        const isMe = myJid && (pJid.split('@')[0] === myJid.split('@')[0]);
+        return !isMe;
+      });
+      addLog(username, `Queue: Tagged ${mentions.length} members for ${targetJid}`, 'info');
     } catch (err: any) {
-      addLog(username, `Queue: Failed to fetch group metadata for tagging: ${err.message}`, 'error');
+      addLog(username, `Queue: Failed to fetch group metadata for tagging (${targetJid}): ${err.message}`, 'error');
     }
   }
 
@@ -1675,13 +1731,72 @@ export interface SavedCode {
   attachmentName?: string;
   attachmentData?: string;
   inlineAttachment?: boolean;
+  buttons?: any[];
+  templateButtons?: any[];
+  listButtonText?: string;
+  listSections?: any[];
   isStatus?: boolean;
   statusType?: 'text' | 'image' | 'video';
   backgroundColor?: string;
   font?: number;
   statusJidList?: string[];
   mentions?: string[];
+  messagesSequence?: any[];
+  interMessageDelaySeconds?: number;
   createdAt: string;
+}
+
+// Reusable Draft Templates Data Structure & Helper
+export interface DraftTemplate {
+  id: string;
+  name: string;
+  phoneNumber?: string;
+  recipientType?: 'individual' | 'group' | 'status';
+  message?: string;
+  msgType?: string;
+  footer?: string;
+  attachmentType?: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  attachmentData?: string;
+  inlineAttachment?: boolean;
+  buttons?: any[];
+  templateButtons?: any[];
+  listButtonText?: string;
+  listSections?: any[];
+  delaySeconds?: number;
+  messagesSequence?: any[];
+  interMessageDelaySeconds?: number;
+  tagGroupMembers?: boolean;
+  sessionIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+function getUserDraftsFilePath(username: string): string {
+  return path.join(getUserDir(username), 'drafts.json');
+}
+
+function loadUserDrafts(username: string): DraftTemplate[] {
+  try {
+    const filePath = getUserDraftsFilePath(username);
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (Array.isArray(data)) {
+        return data;
+      }
+    }
+  } catch (err) {}
+  return [];
+}
+
+function saveUserDrafts(username: string, drafts: DraftTemplate[]): DraftTemplate[] {
+  try {
+    fs.writeFileSync(getUserDraftsFilePath(username), JSON.stringify(drafts, null, 2), 'utf8');
+  } catch (err) {
+    console.error(`Failed to save drafts for user ${username}:`, err);
+  }
+  return drafts;
 }
 
 function getUserSavedCodesFilePath(username: string): string {
@@ -1863,22 +1978,46 @@ async function executeSavedCode(
         continue;
       }
 
-      pushToUserQueue(username, {
-        recipient: targetJid,
-        recipientType: savedCode.recipientType === 'individual' ? 'individual' : 'group',
-        messageType: (savedCode.msgType as any) || 'text',
-        message: savedCode.message,
-        footer: savedCode.footer,
-        attachmentType: (savedCode.attachmentType as any) || 'none',
-        attachmentUrl: savedCode.attachmentUrl,
-        attachmentData: savedCode.attachmentData,
-        attachmentName: savedCode.attachmentName,
-        inlineAttachment: !!savedCode.inlineAttachment,
-        sessionId: assignedSessionId,
-        tagGroupMembers: !!savedCode.tagGroupMembers
-      });
+      const sequence = (Array.isArray(savedCode.messagesSequence) && savedCode.messagesSequence.length > 0)
+        ? savedCode.messagesSequence
+        : [{
+            message: savedCode.message || '',
+            msgType: savedCode.msgType || 'text',
+            footer: savedCode.footer,
+            attachmentType: savedCode.attachmentType || 'none',
+            attachmentUrl: savedCode.attachmentUrl,
+            attachmentData: savedCode.attachmentData,
+            attachmentName: savedCode.attachmentName,
+            inlineAttachment: !!savedCode.inlineAttachment,
+            buttons: savedCode.buttons,
+            templateButtons: savedCode.templateButtons,
+            listButtonText: savedCode.listButtonText,
+            listSections: savedCode.listSections,
+            customDelaySeconds: savedCode.interMessageDelaySeconds ?? savedCode.delaySeconds
+          }];
 
-      enqueuedCount++;
+      for (const seqItem of sequence) {
+        pushToUserQueue(username, {
+          recipient: targetJid,
+          recipientType: savedCode.recipientType === 'individual' ? 'individual' : 'group',
+          messageType: seqItem.msgType || (savedCode.msgType as any) || 'text',
+          message: seqItem.message || '',
+          footer: seqItem.footer || savedCode.footer,
+          attachmentType: seqItem.attachmentType || (savedCode.attachmentType as any) || 'none',
+          attachmentUrl: seqItem.attachmentUrl || savedCode.attachmentUrl,
+          attachmentData: seqItem.attachmentData || savedCode.attachmentData,
+          attachmentName: seqItem.attachmentName || savedCode.attachmentName,
+          inlineAttachment: seqItem.inlineAttachment ?? !!savedCode.inlineAttachment,
+          buttons: seqItem.buttons || savedCode.buttons,
+          templateButtons: seqItem.templateButtons || savedCode.templateButtons,
+          listButtonText: seqItem.listButtonText || savedCode.listButtonText,
+          listSections: seqItem.listSections || savedCode.listSections,
+          sessionId: assignedSessionId,
+          tagGroupMembers: !!savedCode.tagGroupMembers,
+          customDelaySeconds: typeof seqItem.customDelaySeconds === 'number' ? seqItem.customDelaySeconds : savedCode.interMessageDelaySeconds
+        });
+        enqueuedCount++;
+      }
     }
 
     if (typeof savedCode.delaySeconds === 'number' && savedCode.delaySeconds >= 0) {
@@ -2315,7 +2454,7 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
 const connectingLocks = new Map<string, number>();
 
-function scheduleSessionReconnect(username: string, id: string, name?: string, delayMs = 5000) {
+function scheduleSessionReconnect(username: string, id: string, name?: string, delayMs = 3000) {
   const userSessKey = `${username}:${id}`;
   if (reconnectTimers.has(userSessKey)) {
     clearTimeout(reconnectTimers.get(userSessKey)!);
@@ -2323,6 +2462,7 @@ function scheduleSessionReconnect(username: string, id: string, name?: string, d
   }
   const timer = setTimeout(() => {
     reconnectTimers.delete(userSessKey);
+    connectingLocks.delete(userSessKey);
     connectToWhatsApp(username, id, name);
   }, delayMs);
   reconnectTimers.set(userSessKey, timer);
@@ -2337,10 +2477,10 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
     reconnectTimers.delete(userSessKey);
   }
 
-  // Prevent concurrent socket spawning if connection attempt started less than 12s ago
+  // Prevent concurrent socket spawning if connection attempt started less than 4s ago
   const lastConnectingTime = connectingLocks.get(userSessKey) || 0;
   const existingSess = sessions.get(userSessKey);
-  if (Date.now() - lastConnectingTime < 12000 && existingSess?.status === 'connecting') {
+  if (Date.now() - lastConnectingTime < 4000 && existingSess?.status === 'connecting') {
     addLog(username, `[SESSION: ${id}] Connection handshake already in progress. Skipping duplicate call.`, 'info');
     return;
   }
@@ -2379,21 +2519,46 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
   session.activePairingCode = null;
 
   const authFolder = path.join(process.cwd(), 'data', username, 'auth_info_' + id);
+  const credsFile = path.join(authFolder, 'creds.json');
 
   try {
     const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+
+    // If saved credentials contain user info, preserve session.user immediately
+    if (state.creds?.me?.id) {
+      session.user = {
+        id: state.creds.me.id,
+        name: state.creds.me.name || name || 'WhatsApp User'
+      };
+    }
 
     addLog(username, `[SESSION: ${id}] Starting WhatsApp connection...`, 'info');
 
     const sockInstance = makeWASocket({
       auth: state,
       printQRInTerminal: false,
-      logger: pino({ level: 'silent' })
+      logger: pino({ level: 'silent' }),
+      browser: Browsers.ubuntu('Chrome'),
+      syncFullHistory: false,
+      generateHighQualityLinkPreview: true,
+      markOnlineOnConnect: false,
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
+      getMessage: async (key: any) => {
+        return { conversation: '' };
+      }
     });
 
     session.sock = sockInstance;
 
-    sockInstance.ev.on('creds.update', saveCreds);
+    sockInstance.ev.on('creds.update', async () => {
+      try {
+        await saveCreds();
+      } catch (err: any) {
+        console.error(`[SESSION: ${id}] Failed saving Baileys credentials:`, err?.message || err);
+      }
+    });
 
     sockInstance.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
@@ -2411,8 +2576,6 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         connectingLocks.delete(userSessKey);
         session.qrBase64 = null;
         session.activePairingCode = null;
-        session.status = 'disconnected';
-        session.user = null;
 
         const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
         const errMessage = lastDisconnect?.error?.message || 'Connection closed';
@@ -2424,34 +2587,38 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           errMessage.toLowerCase().includes('logged out');
 
         if (isExplicitLogout) {
+          session.status = 'disconnected';
+          session.user = null;
           addLog(username, `[SESSION: ${id}] WhatsApp session explicitly logged out. Clearing credentials...`, 'info');
           try {
             if (fs.existsSync(authFolder)) {
               fs.rmSync(authFolder, { recursive: true, force: true });
             }
           } catch (e: any) {}
-          scheduleSessionReconnect(username, id, name, 2000);
+          scheduleSessionReconnect(username, id, name, 1500);
         } else {
-          const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
-          if (isQrTimeout) {
-            addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing...`, 'info');
-            scheduleSessionReconnect(username, id, name, 3000);
+          const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || errMessage.toLowerCase().includes('conflict');
+          if (isConflict) {
+            session.status = 'disconnected';
+            addLog(username, `[SESSION: ${id}] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" in UI when ready.`, 'info');
+            session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect to resume.';
           } else {
-            const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || errMessage.toLowerCase().includes('conflict');
-            if (isConflict) {
-              addLog(username, `[SESSION: ${id}] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" in UI when ready.`, 'info');
-              session.status = 'disconnected';
-              session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect to resume.';
+            const hasSavedCreds = fs.existsSync(credsFile);
+            if (hasSavedCreds || session.user) {
+              // Smooth stream restart (e.g. Code 515 / 503 / 428 after QR scan or network reset)
+              session.status = 'connecting';
+              addLog(username, `[SESSION: ${id}] Connection stream reset (Code ${statusCode || 'Stream'}). Reconnecting automatically using saved credentials...`, 'info');
+              scheduleSessionReconnect(username, id, name, 500);
             } else {
-              const isStreamError = statusCode === 503 || statusCode === 515 || statusCode === 428 || errMessage.toLowerCase().includes('stream errored');
-              if (isStreamError) {
-                addLog(username, `[SESSION: ${id}] Transient WhatsApp stream drop (Code ${statusCode || 503}: ${errMessage}). Auto-reconnecting socket in 3s...`, 'info');
-                scheduleSessionReconnect(username, id, name, 3000);
+              session.status = 'disconnected';
+              session.user = null;
+              const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
+              if (isQrTimeout) {
+                addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing...`, 'info');
               } else {
                 addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
-                addLog(username, `[SESSION: ${id}] Performing clean socket reconnect in 3 seconds...`, 'info');
-                scheduleSessionReconnect(username, id, name, 3000);
               }
+              scheduleSessionReconnect(username, id, name, 1500);
             }
           }
         }
@@ -2461,8 +2628,8 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         session.activePairingCode = null;
         session.lastError = null;
         session.user = {
-          id: sockInstance.user?.id || 'Unknown JID',
-          name: sockInstance.user?.name || name || 'WhatsApp User'
+          id: sockInstance.user?.id || session.user?.id || 'Unknown JID',
+          name: sockInstance.user?.name || session.user?.name || name || 'WhatsApp User'
         };
 
         addLog(username, `[SESSION: ${id}] WhatsApp connected! JID: ${session.user.id} (${session.user.name})`, 'success');
@@ -2697,6 +2864,101 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             continue;
           }
 
+          // 1. Comprehensive WhatsApp Group link & native invite card scanner (saves to group.json)
+          // Always runs on ALL incoming messages (groups, DMs, text, media captions, native invite cards)
+          try {
+            const participantJid = msg.key.participant || msg.participant || from;
+            const isGroup = from.endsWith('@g.us');
+            const senderJidFormatted = isGroup ? `${participantJid}` : from;
+            const senderDisplayName = msg.pushName || (isGroup ? `Member (${participantJid.split('@')[0]})` : `Contact (${from.split('@')[0]})`);
+
+            let scanText = '';
+            if (msg.message) {
+              scanText += (msg.message.conversation || '') + ' ';
+              scanText += (msg.message.extendedTextMessage?.text || '') + ' ';
+              scanText += (msg.message.imageMessage?.caption || '') + ' ';
+              scanText += (msg.message.videoMessage?.caption || '') + ' ';
+              scanText += (msg.message.documentMessage?.caption || '') + ' ';
+              scanText += (msg.message.documentWithCaptionMessage?.message?.documentMessage?.caption || '') + ' ';
+              scanText += (msg.message.buttonsResponseMessage?.selectedDisplayText || msg.message.buttonsResponseMessage?.selectedButtonId || '') + ' ';
+              scanText += (msg.message.listResponseMessage?.title || msg.message.listResponseMessage?.singleSelectReply?.selectedRowId || '') + ' ';
+
+              // Extract contextInfo quoted message across all message types
+              const anyContextInfo = msg.message.extendedTextMessage?.contextInfo ||
+                                     msg.message.imageMessage?.contextInfo ||
+                                     msg.message.videoMessage?.contextInfo ||
+                                     msg.message.documentMessage?.contextInfo ||
+                                     msg.message.stickerMessage?.contextInfo ||
+                                     msg.message.audioMessage?.contextInfo;
+
+              const qMsg = anyContextInfo?.quotedMessage;
+              if (qMsg) {
+                scanText += (qMsg.conversation || '') + ' ';
+                scanText += (qMsg.extendedTextMessage?.text || '') + ' ';
+                scanText += (qMsg.imageMessage?.caption || '') + ' ';
+                scanText += (qMsg.videoMessage?.caption || '') + ' ';
+                scanText += (qMsg.documentMessage?.caption || '') + ' ';
+
+                if (qMsg.groupInviteMessage?.inviteCode) {
+                  const gInv = qMsg.groupInviteMessage;
+                  const fullUrl = `https://chat.whatsapp.com/${gInv.inviteCode}`;
+                  addLog(username, `🔍 Captured quoted WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
+                  handleGroupInviteUrl(
+                    username,
+                    fullUrl,
+                    gInv.inviteCode,
+                    senderJidFormatted,
+                    senderDisplayName,
+                    gInv.caption || gInv.groupName || fullUrl,
+                    id,
+                    sockInstance
+                  );
+                }
+              }
+
+              // Check native WhatsApp group invite message object
+              if (msg.message.groupInviteMessage?.inviteCode) {
+                const gInv = msg.message.groupInviteMessage;
+                const fullUrl = `https://chat.whatsapp.com/${gInv.inviteCode}`;
+                addLog(username, `🔍 Captured native WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
+                handleGroupInviteUrl(
+                  username,
+                  fullUrl,
+                  gInv.inviteCode,
+                  senderJidFormatted,
+                  senderDisplayName,
+                  gInv.caption || gInv.groupName || fullUrl,
+                  id,
+                  sockInstance
+                );
+              }
+            }
+
+            if (scanText.trim()) {
+              const groupLinkRegex = /(https?:\/\/)?(www\.)?chat\.whatsapp\.com\/(invite\/)?([A-Za-z0-9_-]{18,32})/gi;
+              let match;
+              while ((match = groupLinkRegex.exec(scanText)) !== null) {
+                const fullUrl = match[0].startsWith('http') ? match[0] : `https://${match[0]}`;
+                const code = match[4] || match[3];
+                if (code) {
+                  addLog(username, `🔍 Captured WhatsApp Group link in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}. Resolving & saving...`, 'info');
+                  handleGroupInviteUrl(
+                    username, 
+                    fullUrl, 
+                    code, 
+                    senderJidFormatted, 
+                    senderDisplayName, 
+                    scanText.trim().substring(0, 150), 
+                    id, 
+                    sockInstance
+                  );
+                }
+              }
+            }
+          } catch (scanErr: any) {
+            console.error('Group link scanner error:', scanErr);
+          }
+
           // "doesn't process media recieve don't download media we will send media not process recieved"
           const hasMedia = !!(
             msg.message?.imageMessage || 
@@ -2767,19 +3029,6 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             addLog(username, `[SESSION: ${id}] ${isMe ? 'My Button clicked' : 'Button clicked'}: from=${from} buttonId="${buttonId}" buttonText="${buttonText || ''}"`, 'success');
           } else if (text) {
             addLog(username, `[SESSION: ${id}] ${isMe ? 'My Msg' : 'Msg received'}: from=${from} text="${text.substring(0, 60)}"`, 'info');
-          }
-
-          // 1. Passive WhatsApp Group link scanner (creates group.json)
-          if (text) {
-            const groupLinkRegex = /(https?:\/\/)?chat\.whatsapp\.com\/(invite\/)?([A-Za-z0-9-]{18,26})/gi;
-            let match;
-            while ((match = groupLinkRegex.exec(text)) !== null) {
-              const fullUrl = match[0];
-              const code = match[3];
-              addLog(username, `🔍 WhatsApp Group link matched in text from ${from}: ${fullUrl}. Resolving details...`, 'info');
-              // Asynchronously resolve details and write to group.json (don't block)
-              handleGroupInviteUrl(username, fullUrl, code, from, msg.pushName || 'Unknown Sender', text, id, sockInstance);
-            }
           }
           
           // Register lead interaction instantly (only if NOT from me)
@@ -3270,10 +3519,18 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
     try {
       if (attachmentData) {
         const localCachedPath = await getCachedUploadMedia(attachmentData, attachmentName || '', username);
-        fileRef = { url: localCachedPath };
+        if (fs.existsSync(localCachedPath)) {
+          fileRef = fs.readFileSync(localCachedPath);
+        } else {
+          fileRef = { url: localCachedPath };
+        }
       } else if (attachmentUrl) {
         const localCachedPath = await getCachedMediaUrl(attachmentUrl, username);
-        fileRef = { url: localCachedPath };
+        if (fs.existsSync(localCachedPath)) {
+          fileRef = fs.readFileSync(localCachedPath);
+        } else {
+          fileRef = { url: localCachedPath };
+        }
       }
     } catch (err: any) {
       addLog(username, `❌ Status Schedule Batch Media Error: Failed to resolve attachment: ${err.message}`, 'error');
@@ -3291,7 +3548,14 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
       addLog(username, `Sending Status Batch of ${batchMembers.length} members from session "${session.name}"...`, 'info');
 
       let payload: any = {};
-      const cleanJidList = finalJidList.filter(j => j && j !== 'status@broadcast');
+      const cleanJidList = finalJidList
+        .filter(j => j && j !== 'status@broadcast' && !j.endsWith('@g.us'))
+        .map(j => {
+          const num = j.split('@')[0].split(':')[0].replace(/\D/g, '');
+          return num ? `${num}@s.whatsapp.net` : null;
+        })
+        .filter(Boolean) as string[];
+
       const options: any = {};
       if (cleanJidList.length > 0) {
         options.statusJidList = cleanJidList;
@@ -3303,6 +3567,7 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
           const cleanHex = backgroundColor.replace('#', '');
           const argb = parseInt('FF' + cleanHex, 16);
           const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
+          payload.backgroundColor = backgroundArgb;
           payload.backgroundArgb = backgroundArgb;
           payload.font = font || 1;
         }
@@ -3320,23 +3585,22 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
         throw new Error('Unsupported status type or missing attachment data');
       }
 
-      const cleanedMentions = batchMembers.map((m: string) => m.includes('@') ? m : `${m}@s.whatsapp.net`);
+      const cleanedMentions = batchMembers
+        .filter(m => m && !m.endsWith('@g.us'))
+        .map((m: string) => {
+          const num = m.split('@')[0].split(':')[0].replace(/\D/g, '');
+          return num ? `${num}@s.whatsapp.net` : null;
+        })
+        .filter(Boolean) as string[];
+
       const limitMentions = cleanedMentions.slice(0, 5); // Max 5 silent mentions per WhatsApp status update
-      if (statusType === 'text') {
-        if (payload.extendedTextMessage) {
-          payload.extendedTextMessage.contextInfo = {
-            mentionedJid: limitMentions
-          };
-        } else {
-          payload.contextInfo = {
-            mentionedJid: limitMentions
-          };
-        }
-      } else {
+      if (limitMentions.length > 0) {
         payload.contextInfo = {
           mentionedJid: limitMentions
         };
-        payload.mentions = limitMentions;
+        if (statusType !== 'text') {
+          payload.mentions = limitMentions;
+        }
       }
 
       await session.sock.sendMessage('status@broadcast', payload, options);
@@ -3849,12 +4113,18 @@ function getFirestoreStatusPayload() {
       attachmentName,
       attachmentData,
       inlineAttachment = false,
+      buttons,
+      templateButtons,
+      listButtonText,
+      listSections,
       isStatus = false,
       statusType,
       backgroundColor,
       font,
       statusJidList,
-      mentions
+      mentions,
+      messagesSequence,
+      interMessageDelaySeconds
     } = req.body;
 
     if (!code) {
@@ -3872,7 +4142,7 @@ function getFirestoreStatusPayload() {
       return res.status(400).json({ success: false, error: 'Recipient group ID or phone number is required.' });
     }
 
-    if (!message && (attachmentType === 'none' || !attachmentType)) {
+    if (!message && (!messagesSequence || !messagesSequence.length) && (attachmentType === 'none' || !attachmentType)) {
       return res.status(400).json({ success: false, error: 'Please provide either a message body or an attachment for this saved code.' });
     }
 
@@ -3895,12 +4165,18 @@ function getFirestoreStatusPayload() {
       attachmentName,
       attachmentData,
       inlineAttachment: !!inlineAttachment,
+      buttons: Array.isArray(buttons) ? buttons : undefined,
+      templateButtons: Array.isArray(templateButtons) ? templateButtons : undefined,
+      listButtonText,
+      listSections: Array.isArray(listSections) ? listSections : undefined,
       isStatus: isStatusMode,
       statusType: isStatusMode ? (statusType || (attachmentType === 'image' ? 'image' : attachmentType === 'video' ? 'video' : 'text')) : undefined,
       backgroundColor: isStatusMode ? backgroundColor : undefined,
       font: isStatusMode ? font : undefined,
       statusJidList: Array.isArray(statusJidList) ? statusJidList : undefined,
       mentions: Array.isArray(mentions) ? mentions : undefined,
+      messagesSequence: Array.isArray(messagesSequence) ? messagesSequence : undefined,
+      interMessageDelaySeconds: typeof interMessageDelaySeconds === 'number' ? interMessageDelaySeconds : undefined,
       createdAt: new Date().toISOString()
     };
 
@@ -3919,6 +4195,101 @@ function getFirestoreStatusPayload() {
       savedCode: newSavedCode,
       message: `Code .${cleanCode} saved permanently! Type .${cleanCode} in WhatsApp anytime to trigger.`
     });
+  });
+
+  // Draft Message Templates APIs (Usable across logged in accounts & saves incomplete messages)
+  app.get('/api/drafts', requireAuth, (req: any, res) => {
+    res.json({ success: true, drafts: loadUserDrafts(req.username) });
+  });
+
+  app.post('/api/drafts', requireAuth, (req: any, res) => {
+    const {
+      id,
+      name,
+      phoneNumber = '',
+      recipientType = 'individual',
+      message = '',
+      msgType = 'text',
+      footer,
+      attachmentType = 'none',
+      attachmentUrl,
+      attachmentName,
+      attachmentData,
+      inlineAttachment = true,
+      buttons,
+      templateButtons,
+      listButtonText,
+      listSections,
+      delaySeconds = 2,
+      messagesSequence,
+      interMessageDelaySeconds,
+      tagGroupMembers = false,
+      sessionIds = ['primary']
+    } = req.body;
+
+    const draftName = (name && String(name).trim()) || `Draft ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    const drafts = loadUserDrafts(req.username);
+
+    let draftId = id;
+    let existingIndex = -1;
+    if (draftId) {
+      existingIndex = drafts.findIndex(d => d.id === draftId);
+    }
+
+    if (existingIndex === -1) {
+      draftId = Math.random().toString(36).substring(7);
+    }
+
+    const newDraft: DraftTemplate = {
+      id: draftId,
+      name: draftName,
+      phoneNumber,
+      recipientType,
+      message,
+      msgType,
+      footer,
+      attachmentType,
+      attachmentUrl,
+      attachmentName,
+      attachmentData,
+      inlineAttachment: !!inlineAttachment,
+      buttons: Array.isArray(buttons) ? buttons : undefined,
+      templateButtons: Array.isArray(templateButtons) ? templateButtons : undefined,
+      listButtonText,
+      listSections: Array.isArray(listSections) ? listSections : undefined,
+      delaySeconds: typeof delaySeconds === 'number' ? delaySeconds : 2,
+      messagesSequence: Array.isArray(messagesSequence) ? messagesSequence : undefined,
+      interMessageDelaySeconds: typeof interMessageDelaySeconds === 'number' ? interMessageDelaySeconds : undefined,
+      tagGroupMembers: !!tagGroupMembers,
+      sessionIds: Array.isArray(sessionIds) ? sessionIds : ['primary'],
+      createdAt: existingIndex >= 0 ? drafts[existingIndex].createdAt : new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    if (existingIndex >= 0) {
+      drafts[existingIndex] = newDraft;
+    } else {
+      drafts.unshift(newDraft);
+    }
+
+    saveUserDrafts(req.username, drafts);
+    addLog(req.username, `💾 Reusable Draft Template "${draftName}" saved successfully.`, 'success');
+
+    res.json({
+      success: true,
+      drafts,
+      draft: newDraft,
+      message: `Draft template "${draftName}" saved successfully!`
+    });
+  });
+
+  app.delete('/api/drafts/:id', requireAuth, (req: any, res) => {
+    const { id } = req.params;
+    const drafts = loadUserDrafts(req.username);
+    const updated = drafts.filter(d => d.id !== id);
+    saveUserDrafts(req.username, updated);
+    addLog(req.username, `Draft template deleted.`, 'info');
+    res.json({ success: true, drafts: updated, message: 'Draft template deleted successfully.' });
   });
 
   app.delete('/api/saved-codes/:id', requireAuth, (req: any, res) => {
@@ -4345,13 +4716,15 @@ function getFirestoreStatusPayload() {
         if (!jid) continue;
 
         let meta = g;
-        try {
-          const freshMeta = await sock.groupMetadata(jid);
-          if (freshMeta && freshMeta.participants) {
-            meta = freshMeta;
+        if (!meta.participants || !Array.isArray(meta.participants) || meta.participants.length === 0) {
+          try {
+            const freshMeta = await sock.groupMetadata(jid);
+            if (freshMeta && freshMeta.participants) {
+              meta = freshMeta;
+            }
+          } catch (e) {
+            // Fallback to groupFetchAllParticipating data
           }
-        } catch (e) {
-          // Fallback to groupFetchAllParticipating data
         }
 
         const subject = meta.subject || g.subject || 'Unnamed Group';
@@ -4429,10 +4802,16 @@ function getFirestoreStatusPayload() {
       const credsFile = path.join(authFolder, 'creds.json');
       const hasSavedCredentials = fs.existsSync(credsFile);
 
+      if (hasSavedCredentials && (!s || s.status === 'disconnected') && !s?.lastError?.includes('replaced') && !s?.lastError?.includes('Conflict')) {
+        connectToWhatsApp(req.username, c.id, c.name).catch(() => {});
+      }
+
+      const effectiveStatus = s ? s.status : (hasSavedCredentials ? 'connecting' : 'disconnected');
+
       return {
         id: c.id,
         name: c.name,
-        status: s ? s.status : 'disconnected',
+        status: effectiveStatus,
         qrBase64: s ? s.qrBase64 : null,
         pairingCode: s ? s.activePairingCode : null,
         user: s ? s.user : null,
@@ -4589,9 +4968,46 @@ function getFirestoreStatusPayload() {
   });
 
   app.post('/api/queue/clear', requireAuth, (req: any, res) => {
-    saveUserQueue(req.username, []);
-    addLog(req.username, 'Message Queue cleared successfully.', 'info');
-    res.json({ success: true, message: 'Message Queue cleared successfully.' });
+    const { type } = req.body || {};
+    const queue = loadUserQueue(req.username);
+    let updatedQueue: QueueItem[] = [];
+
+    if (type === 'pending') {
+      updatedQueue = queue.filter(item => item.status !== 'pending');
+      const removedCount = queue.length - updatedQueue.length;
+      addLog(req.username, `Message Queue: Cleared all pending queue items (${removedCount} items removed).`, 'info');
+    } else if (type === 'history' || type === 'past') {
+      updatedQueue = queue.filter(item => item.status === 'pending' || item.status === 'sending');
+      const removedCount = queue.length - updatedQueue.length;
+      addLog(req.username, `Message Queue: Cleared completed & failed queue history (${removedCount} items removed).`, 'info');
+    } else {
+      updatedQueue = [];
+      addLog(req.username, 'Message Queue: Cleared all queue items.', 'info');
+    }
+
+    saveUserQueue(req.username, updatedQueue);
+    res.json({ success: true, queue: updatedQueue, message: 'Message Queue cleared successfully.' });
+  });
+
+  // Message History APIs
+  app.get('/api/history', requireAuth, (req: any, res) => {
+    const sentHistory = loadUserSentMessages(req.username);
+    res.json({ success: true, history: sentHistory });
+  });
+
+  app.post('/api/history/clear', requireAuth, (req: any, res) => {
+    saveUserSentMessages(req.username, []);
+    addLog(req.username, 'Message History: Cleared all sent message records.', 'info');
+    res.json({ success: true, history: [], message: 'Message history cleared successfully.' });
+  });
+
+  app.delete('/api/history/:id', requireAuth, (req: any, res) => {
+    const { id } = req.params;
+    const history = loadUserSentMessages(req.username);
+    const updated = history.filter(item => item.id !== id);
+    saveUserSentMessages(req.username, updated);
+    addLog(req.username, `Message History: Deleted record ${id}.`, 'info');
+    res.json({ success: true, history: updated, message: `Deleted message record ${id}.` });
   });
 
   app.post('/api/media/clear-cache', requireAuth, (req: any, res) => {
@@ -4786,7 +5202,9 @@ function getFirestoreStatusPayload() {
     const { 
       phoneNumber, 
       recipientType,
-      message, 
+      message,
+      messagesSequence,
+      interMessageDelaySeconds = 3,
       msgType, 
       footer, 
       buttons, 
@@ -4808,9 +5226,15 @@ function getFirestoreStatusPayload() {
       return res.status(400).json({ success: false, error: 'Recipient phone number or Group JID is required.' });
     }
 
-    if (!message && (attachmentType === 'none' || !attachmentType)) {
+    const hasSequence = Array.isArray(messagesSequence) && messagesSequence.length > 0;
+    if (!message && !hasSequence && (attachmentType === 'none' || !attachmentType)) {
       return res.status(400).json({ success: false, error: 'Please provide either a message body or an attachment.' });
     }
+
+    // Prepare normalized list of sequence sub-messages
+    const sequenceItems = hasSequence 
+      ? messagesSequence.map((item: any) => typeof item === 'string' ? { message: item } : item)
+      : [{ message: message || '', msgType, footer, attachmentType, attachmentUrl, attachmentData, attachmentName, inlineAttachment, buttons, templateButtons, listButtonText, listSections }];
 
     // Split recipient list
     let recipients: string[] = [];
@@ -4860,85 +5284,32 @@ function getFirestoreStatusPayload() {
         continue;
       }
 
-      if (recipientType === 'group' && tagGroupMembers) {
-        try {
-          const userSessKey = `${req.username}:${assignedSessionId}`;
-          const sess = sessions.get(userSessKey);
-          if (sess && sess.sock) {
-            addLog(req.username, `Queue API: Fetching participants to split group tagging into batches for ${targetJid}`, 'info');
-            const metadata = await sess.sock.groupMetadata(targetJid);
-            if (metadata && metadata.participants) {
-              const myJid = sess.sock.user?.id ? (sess.sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net') : null;
-              const cleaned = cleanParticipantJidList(metadata.participants);
-              const participants = cleaned.filter((pJid: string) => {
-                const isMe = myJid && (pJid.split('@')[0] === myJid.split('@')[0]);
-                return !isMe;
-              });
-
-              if (participants.length > 0) {
-                const batchSize = 10;
-                const tagJobId = `tagjob_${Math.random().toString(36).substring(7)}`;
-                const totalMembers = participants.length;
-                const totalBatches = Math.ceil(totalMembers / batchSize);
-
-                for (let b = 0; b < participants.length; b += batchSize) {
-                  const batchMembers = participants.slice(b, b + batchSize);
-                  const item = pushToUserQueue(req.username, {
-                    recipient: targetJid,
-                    recipientType,
-                    messageType: msgType,
-                    message,
-                    footer,
-                    attachmentType,
-                    attachmentUrl,
-                    attachmentData,
-                    attachmentName,
-                    inlineAttachment,
-                    buttons,
-                    templateButtons,
-                    listButtonText,
-                    listSections,
-                    sessionId: assignedSessionId,
-                    tagGroupMembers: false,
-                    batchMentions: batchMembers,
-                    tagJobId,
-                    tagJobTotal: totalMembers,
-                    tagJobCompleted: b,
-                    tagJobBatchIndex: Math.floor(b / batchSize) + 1,
-                    tagJobBatchCount: totalBatches,
-                    scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
-                  });
-                  addedItems.push(item);
-                }
-                continue; // Skip the default single queue push
-              }
-            }
-          }
-        } catch (err: any) {
-          console.error('[API SEND] Error setting up pre-batched group tagging:', err);
-        }
+      // First send all sequence messages to this recipient before proceeding to the next recipient
+      for (let s = 0; s < sequenceItems.length; s++) {
+        const seqItem = sequenceItems[s];
+        const item = pushToUserQueue(req.username, {
+          recipient: targetJid,
+          recipientType,
+          messageType: seqItem.msgType || msgType || 'text',
+          message: seqItem.message || '',
+          footer: seqItem.footer || footer,
+          attachmentType: seqItem.attachmentType || attachmentType,
+          attachmentUrl: seqItem.attachmentUrl || attachmentUrl,
+          attachmentData: seqItem.attachmentData || attachmentData,
+          attachmentName: seqItem.attachmentName || attachmentName,
+          inlineAttachment: seqItem.inlineAttachment ?? inlineAttachment,
+          buttons: seqItem.buttons || buttons,
+          templateButtons: seqItem.templateButtons || templateButtons,
+          listButtonText: seqItem.listButtonText || listButtonText,
+          listSections: seqItem.listSections || listSections,
+          sessionId: assignedSessionId,
+          tagGroupMembers: !!tagGroupMembers,
+          customDelaySeconds: typeof seqItem.customDelaySeconds === 'number' ? seqItem.customDelaySeconds : interMessageDelaySeconds,
+          sequenceIndex: s,
+          scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
+        });
+        addedItems.push(item);
       }
-
-      const item = pushToUserQueue(req.username, {
-        recipient: targetJid,
-        recipientType,
-        messageType: msgType,
-        message,
-        footer,
-        attachmentType,
-        attachmentUrl,
-        attachmentData,
-        attachmentName,
-        inlineAttachment,
-        buttons,
-        templateButtons,
-        listButtonText,
-        listSections,
-        sessionId: assignedSessionId,
-        tagGroupMembers: !!tagGroupMembers,
-        scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
-      });
-      addedItems.push(item);
     }
 
     res.json({
@@ -4989,15 +5360,36 @@ function getFirestoreStatusPayload() {
       try {
         if (attachmentData) {
           const localCachedPath = await getCachedUploadMedia(attachmentData, attachmentName || '', req.username);
-          fileRef = { url: localCachedPath };
+          if (fs.existsSync(localCachedPath)) {
+            fileRef = fs.readFileSync(localCachedPath);
+          } else {
+            fileRef = { url: localCachedPath };
+          }
         } else if (attachmentUrl) {
           const localCachedPath = await getCachedMediaUrl(attachmentUrl, req.username);
-          fileRef = { url: localCachedPath };
+          if (fs.existsSync(localCachedPath)) {
+            fileRef = fs.readFileSync(localCachedPath);
+          } else {
+            fileRef = { url: localCachedPath };
+          }
         }
       } catch (err: any) {
         addLog(req.username, `❌ Status Media Error: Failed to resolve attachment: ${err.message}`, 'error');
         return res.status(400).json({ success: false, error: `Failed to resolve attachment: ${err.message}` });
       }
+    }
+
+    const cleanJidList = finalJidList
+      .filter(j => j && j !== 'status@broadcast' && !j.endsWith('@g.us'))
+      .map((j: string) => {
+        const cleanNum = j.split('@')[0].split(':')[0].replace(/\D/g, '');
+        return cleanNum ? `${cleanNum}@s.whatsapp.net` : null;
+      })
+      .filter(Boolean) as string[];
+
+    const options: any = {};
+    if (cleanJidList.length > 0) {
+      options.statusJidList = cleanJidList;
     }
 
     const results = [];
@@ -5010,9 +5402,6 @@ function getFirestoreStatusPayload() {
         addLog(req.username, `Sending WhatsApp Status (${statusType}) from session "${session.name}"...`, 'info');
 
         let payload: any = {};
-        const options: any = {
-          statusJidList: finalJidList
-        };
 
         if (statusType === 'text') {
           payload = { text: text };
@@ -5020,6 +5409,7 @@ function getFirestoreStatusPayload() {
             const cleanHex = backgroundColor.replace('#', '');
             const argb = parseInt('FF' + cleanHex, 16);
             const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
+            payload.backgroundColor = backgroundArgb;
             payload.backgroundArgb = backgroundArgb;
             payload.font = font || 1;
           }
@@ -5039,23 +5429,22 @@ function getFirestoreStatusPayload() {
 
         // Add silent mentions/tags (Max 5 for safety)
         if (mentions && mentions.length > 0) {
-          const cleanedMentions = mentions.map((m: string) => m.includes('@') ? m : `${m}@s.whatsapp.net`);
+          const cleanedMentions = mentions
+            .filter((m: string) => m && !m.endsWith('@g.us'))
+            .map((m: string) => {
+              const cleanNum = m.split('@')[0].split(':')[0].replace(/\D/g, '');
+              return cleanNum ? `${cleanNum}@s.whatsapp.net` : null;
+            })
+            .filter(Boolean) as string[];
+
           const limitMentions = cleanedMentions.slice(0, 5); // Max 5 silent mentions per status update
-          if (statusType === 'text') {
-            if (payload.extendedTextMessage) {
-              payload.extendedTextMessage.contextInfo = {
-                mentionedJid: limitMentions
-              };
-            } else {
-              payload.contextInfo = {
-                mentionedJid: limitMentions
-              };
-            }
-          } else {
+          if (limitMentions.length > 0) {
             payload.contextInfo = {
               mentionedJid: limitMentions
             };
-            payload.mentions = limitMentions;
+            if (statusType !== 'text') {
+              payload.mentions = limitMentions;
+            }
           }
         }
 
@@ -5267,6 +5656,14 @@ function getFirestoreStatusPayload() {
     const index = queue.findIndex(i => i.id === itemId);
     if (index === -1) {
       return res.status(404).json({ success: false, error: 'Queue item not found' });
+    }
+
+    if (action === 'delete') {
+      queue.splice(index, 1);
+      saveUserQueue(req.username, queue);
+      addLog(req.username, `Queue: Deleted item ${itemId} from queue.`, 'info');
+      processUserQueue(req.username);
+      return res.json({ success: true, queue: loadUserQueue(req.username) });
     }
 
     if (queue[index].status !== 'pending') {
