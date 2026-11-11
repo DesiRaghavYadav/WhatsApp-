@@ -139,7 +139,6 @@ export default function StatusBroadcastPage({
   };
 
   const handleDeleteSchedule = async (id: string) => {
-    if (!window.confirm('Are you sure you want to cancel and delete this status schedule?')) return;
     try {
       const response = await fetchWithAuth(`/api/status/schedules/${id}`, {
         method: 'DELETE'
@@ -261,7 +260,6 @@ export default function StatusBroadcastPage({
   };
 
   const handleDeleteSavedCode = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this saved code?')) return;
     try {
       const response = await fetchWithAuth(`/api/saved-codes/${id}`, {
         method: 'DELETE'

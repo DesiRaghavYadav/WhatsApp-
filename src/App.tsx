@@ -7,6 +7,8 @@ import SharesManagerPage from './components/SharesManagerPage';
 import StatusBroadcastPage from './components/StatusBroadcastPage';
 import { QueueManagerPage } from './components/QueueManagerPage';
 import { FirestoreStatusCard } from './components/FirestoreStatusCard';
+import GroupInvitesManagerPage from './components/GroupInvitesManagerPage';
+import LiveQrScannerPage from './components/LiveQrScannerPage';
 import { 
   Send, 
   QrCode, 
@@ -71,7 +73,8 @@ import {
   Gauge,
   Edit2,
   Target,
-  Smile
+  Smile,
+  Radio
 } from 'lucide-react';
 
 import {
@@ -269,12 +272,34 @@ interface WorkflowRule {
 
 export default function App() {
   // Navigation View State
-  const [currentView, setCurrentView] = useState<'dispatch' | 'workflows' | 'analytics' | 'lists' | 'leads' | 'settings' | 'shares'>('dispatch');
+  const [currentView, setCurrentView] = useState<'dispatch' | 'workflows' | 'analytics' | 'lists' | 'leads' | 'settings' | 'shares' | 'group-invites' | 'queue-manager' | 'status' | 'scan'>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('view') === 'scan' || window.location.pathname.startsWith('/scan') || window.location.pathname.startsWith('/live-qr')) {
+      return 'scan';
+    }
+    return 'dispatch';
+  });
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   
-  // User Authentication State
-  const [token, setToken] = useState<string | null>(localStorage.getItem('wa_auth_token'));
-  const [username, setUsername] = useState<string | null>(localStorage.getItem('wa_username'));
+  // User Authentication State (Supports url token parameter e.g. for live scanner page opened on another phone)
+  const [token, setToken] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get('token');
+    if (urlToken) {
+      localStorage.setItem('wa_auth_token', urlToken);
+      return urlToken;
+    }
+    return localStorage.getItem('wa_auth_token');
+  });
+  const [username, setUsername] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlUser = params.get('user') || params.get('username');
+    if (urlUser) {
+      localStorage.setItem('wa_username', urlUser);
+      return urlUser;
+    }
+    return localStorage.getItem('wa_username');
+  });
   const [isLoginMode, setIsLoginMode] = useState<boolean>(true);
   const [authUsernameInput, setAuthUsernameInput] = useState<string>('');
   const [authPasswordInput, setAuthPasswordInput] = useState<string>('');
@@ -287,6 +312,14 @@ export default function App() {
   const [disableTextProcessing, setDisableTextProcessing] = useState<boolean>(false);
   const [shareBatchSize, setShareBatchSize] = useState<number>(5);
   const [shareBatchPauseSeconds, setShareBatchPauseSeconds] = useState<number>(10);
+  const [defaultChannelJid, setDefaultChannelJid] = useState<string>('');
+  const [defaultChannelName, setDefaultChannelName] = useState<string>('');
+  const [defaultChannelInviteLink, setDefaultChannelInviteLink] = useState<string>('');
+  const [autoAttachChannelTag, setAutoAttachChannelTag] = useState<boolean>(false);
+  const [appendChannelLinkToShare, setAppendChannelLinkToShare] = useState<boolean>(false);
+  const [followedChannels, setFollowedChannels] = useState<any[]>([]);
+  const [isLoadingFollowedChannels, setIsLoadingFollowedChannels] = useState<boolean>(false);
+  const [isVerifyingChannel, setIsVerifyingChannel] = useState<boolean>(false);
   const [globalBlockedGroups, setGlobalBlockedGroups] = useState<string[]>([]);
   const [blockedInput, setBlockedInput] = useState<string>('');
   const [isSavingBlocked, setIsSavingBlocked] = useState<boolean>(false);
@@ -348,6 +381,7 @@ export default function App() {
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [activePairingCode, setActivePairingCode] = useState<string | null>(null);
   const [linkMode, setLinkMode] = useState<'qr' | 'pairing'>('qr');
+  const [showSessionHelp, setShowSessionHelp] = useState<boolean>(false);
   const [pairingPhone, setPairingPhone] = useState<string>('');
   const [isRequestingCode, setIsRequestingCode] = useState<boolean>(false);
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
@@ -898,6 +932,11 @@ export default function App() {
           setDisableTextProcessing(!!data.settings.disableTextProcessing);
           setShareBatchSize(data.settings.shareBatchSize || 5);
           setShareBatchPauseSeconds(data.settings.shareBatchPauseSeconds || 10);
+          setDefaultChannelJid(data.settings.defaultChannelJid || '');
+          setDefaultChannelName(data.settings.defaultChannelName || '');
+          setDefaultChannelInviteLink(data.settings.defaultChannelInviteLink || '');
+          setAutoAttachChannelTag(!!data.settings.autoAttachChannelTag);
+          setAppendChannelLinkToShare(!!data.settings.appendChannelLinkToShare);
         }
       }
     } catch (e) {
@@ -905,7 +944,17 @@ export default function App() {
     }
   };
 
-  const saveSettings = async (prefix: string, disableText: boolean, batchSize: number, pauseSec: number) => {
+  const saveSettings = async (
+    prefix: string, 
+    disableText: boolean, 
+    batchSize: number, 
+    pauseSec: number,
+    channelJid?: string,
+    channelName?: string,
+    autoAttach?: boolean,
+    channelInviteLink?: string,
+    appendLink?: boolean
+  ) => {
     setIsSavingSettings(true);
     try {
       const res = await fetchWithAuth('/api/settings', {
@@ -914,7 +963,12 @@ export default function App() {
           secretPrefix: prefix, 
           disableTextProcessing: disableText,
           shareBatchSize: batchSize,
-          shareBatchPauseSeconds: pauseSec
+          shareBatchPauseSeconds: pauseSec,
+          defaultChannelJid: channelJid !== undefined ? channelJid : defaultChannelJid,
+          defaultChannelName: channelName !== undefined ? channelName : defaultChannelName,
+          defaultChannelInviteLink: channelInviteLink !== undefined ? channelInviteLink : defaultChannelInviteLink,
+          autoAttachChannelTag: autoAttach !== undefined ? autoAttach : autoAttachChannelTag,
+          appendChannelLinkToShare: appendLink !== undefined ? appendLink : appendChannelLinkToShare
         })
       });
       const data = await res.json();
@@ -923,6 +977,11 @@ export default function App() {
         setDisableTextProcessing(!!data.settings.disableTextProcessing);
         setShareBatchSize(data.settings.shareBatchSize);
         setShareBatchPauseSeconds(data.settings.shareBatchPauseSeconds);
+        setDefaultChannelJid(data.settings.defaultChannelJid || '');
+        setDefaultChannelName(data.settings.defaultChannelName || '');
+        setDefaultChannelInviteLink(data.settings.defaultChannelInviteLink || '');
+        setAutoAttachChannelTag(!!data.settings.autoAttachChannelTag);
+        setAppendChannelLinkToShare(!!data.settings.appendChannelLinkToShare);
         setFeedback({ type: 'success', text: 'Settings updated successfully!' });
       } else {
         setFeedback({ type: 'error', text: data.error || 'Failed to save settings.' });
@@ -931,6 +990,63 @@ export default function App() {
       setFeedback({ type: 'error', text: 'Network error saving settings.' });
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  const fetchFollowedChannels = async () => {
+    setIsLoadingFollowedChannels(true);
+    try {
+      const res = await fetchWithAuth('/api/channels');
+      if (res.ok) {
+        const data = await res.json();
+        const chs = data.channels || [];
+        setFollowedChannels(chs);
+        if (chs.length > 0) {
+          setFeedback({ type: 'success', text: `Loaded ${chs.length} WhatsApp channel(s) from connected session.` });
+        } else {
+          setFeedback({ type: 'error', text: 'No followed channels found. You can paste your channel link directly.' });
+        }
+      }
+    } catch (e: any) {
+      setFeedback({ type: 'error', text: 'Failed to fetch channels: ' + e.message });
+    } finally {
+      setIsLoadingFollowedChannels(false);
+    }
+  };
+
+  const handleVerifyChannel = async () => {
+    const candidate = defaultChannelInviteLink.trim() || defaultChannelJid.trim() || defaultChannelName.trim();
+    if (!candidate) {
+      alert('Please enter a Channel Link, JID, or Name to verify.');
+      return;
+    }
+    setIsVerifyingChannel(true);
+    try {
+      const res = await fetchWithAuth('/api/channels/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channelInput: candidate })
+      });
+      const data = await res.json();
+      if (res.ok && data.channel) {
+        setDefaultChannelJid(data.channel.id);
+        if (data.channel.name) {
+          setDefaultChannelName(data.channel.name);
+        }
+        if (data.channel.channelLink || data.channel.invite) {
+          setDefaultChannelInviteLink(data.channel.channelLink || (data.channel.invite.startsWith('http') ? data.channel.invite : `https://whatsapp.com/channel/${data.channel.invite}`));
+        }
+        setFeedback({ 
+          type: 'success', 
+          text: `Verified Channel: "${data.channel.name}" (${data.channel.id})${data.channel.serverMessageId ? ` [Message #${data.channel.serverMessageId}]` : ''}` 
+        });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Could not verify channel with WhatsApp.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: 'Verification error: ' + err.message });
+    } finally {
+      setIsVerifyingChannel(false);
     }
   };
 
@@ -1745,9 +1861,6 @@ export default function App() {
       setFeedback({ type: 'error', text: 'Cannot delete primary session.' });
       return;
     }
-    if (!window.confirm(`Are you sure you want to delete session "${id}"? This will delete all credentials.`)) {
-      return;
-    }
     try {
       const res = await fetchWithAuth(`/api/sessions/${id}`, { method: 'DELETE' });
       const data = await res.json();
@@ -1785,6 +1898,29 @@ export default function App() {
       setFeedback({ type: 'error', text: err.message || 'Error reconnecting session.' });
     } finally {
       setIsReconnectingSession(prev => ({ ...prev, [sessionId]: false }));
+    }
+  };
+
+  const [isRegeneratingQr, setIsRegeneratingQr] = useState<Record<string, boolean>>({});
+
+  const handleRegenerateSessionQr = async (sessionId: string) => {
+    setIsRegeneratingQr(prev => ({ ...prev, [sessionId]: true }));
+    try {
+      const res = await fetchWithAuth('/api/sessions/regenerate-qr', {
+        method: 'POST',
+        body: JSON.stringify({ id: sessionId, sessionId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setFeedback({ type: 'success', text: data.message || `Generating brand new QR code for session "${sessionId}"...` });
+        fetchSessions();
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to generate new QR code.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error generating new QR code.' });
+    } finally {
+      setIsRegeneratingQr(prev => ({ ...prev, [sessionId]: false }));
     }
   };
 
@@ -1869,14 +2005,6 @@ export default function App() {
   const handleClearQueue = async (type: 'pending' | 'history' | 'all' | any = 'all') => {
     const cleanType: 'pending' | 'history' | 'all' = (typeof type === 'string' && ['pending', 'history', 'all'].includes(type)) ? (type as any) : 'all';
 
-    let confirmMsg = 'Are you sure you want to clear the entire message queue?';
-    if (cleanType === 'pending') {
-      confirmMsg = 'Are you sure you want to delete ALL pending queue items?';
-    } else if (cleanType === 'history') {
-      confirmMsg = 'Are you sure you want to clear completed and failed queue history?';
-    }
-    if (!window.confirm(confirmMsg)) return;
-
     try {
       const res = await fetchWithAuth('/api/queue/clear', {
         method: 'POST',
@@ -1909,9 +2037,6 @@ export default function App() {
   };
 
   const handleClearMessageHistory = async () => {
-    if (!window.confirm('Are you sure you want to clear ALL message history logs? This action cannot be undone.')) {
-      return;
-    }
     try {
       const res = await fetchWithAuth('/api/history/clear', { method: 'POST' });
       const data = await res.json();
@@ -1952,11 +2077,9 @@ export default function App() {
     fetchGroups();
     fetchQueue();
     fetchPausedSessions();
+    fetchCapturedGroupInvites();
     if (currentView === 'analytics') {
       fetchAnalytics();
-    }
-    if (currentView === 'settings') {
-      fetchCapturedGroupInvites();
     }
 
     const interval = setInterval(() => {
@@ -1968,7 +2091,7 @@ export default function App() {
       if (currentView === 'analytics') {
         fetchAnalytics();
       }
-      if (currentView === 'settings') {
+      if (currentView === 'settings' || currentView === 'group-invites') {
         fetchCapturedGroupInvites();
       }
       
@@ -2172,26 +2295,24 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    if (window.confirm('Are you sure you want to disconnect? This purges saved session keys.')) {
-      setIsResetting(true);
-      try {
-        const res = await fetchWithAuth('/api/logout', { method: 'POST' });
-        if (res.ok) {
-          setConnected(false);
-          setStatus('disconnected');
-          setUser(null);
-          setQrCode(null);
-          setFeedback({ type: 'success', text: 'Session successfully disconnected & reset!' });
-          fetchStatus();
-          fetchQR();
-        } else {
-          alert('Failed to reset session.');
-        }
-      } catch (err) {
-        alert('Error connecting to backend server during reset.');
-      } finally {
-        setIsResetting(false);
+    setIsResetting(true);
+    try {
+      const res = await fetchWithAuth('/api/logout', { method: 'POST' });
+      if (res.ok) {
+        setConnected(false);
+        setStatus('disconnected');
+        setUser(null);
+        setQrCode(null);
+        setFeedback({ type: 'success', text: 'Session successfully disconnected & reset!' });
+        fetchStatus();
+        fetchQR();
+      } else {
+        setFeedback({ type: 'error', text: 'Failed to reset session.' });
       }
+    } catch (err) {
+      setFeedback({ type: 'error', text: 'Error connecting to backend server during reset.' });
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -2298,6 +2419,26 @@ export default function App() {
     next[index] = { ...next[index], [field]: val };
     setTemplateButtons(next);
   };
+
+  // Early return for standalone Live QR scanner mode if requested via URL (/scan or /live-qr or ?view=scan)
+  const isScanRoute = window.location.pathname.startsWith('/scan') || 
+                      window.location.pathname.startsWith('/live-qr') || 
+                      new URLSearchParams(window.location.search).get('view') === 'scan';
+
+  if (isScanRoute) {
+    return (
+      <LiveQrScannerPage
+        token={token}
+        username={username}
+        initialSessionId={activeLinkSessionId}
+        onBackToDashboard={token ? () => {
+          window.history.pushState({}, '', '/');
+          setCurrentView('dispatch');
+        } : undefined}
+        isStandalone={true}
+      />
+    );
+  }
 
   // Early return for login mode if not authenticated
   if (!token) {
@@ -2586,6 +2727,19 @@ export default function App() {
       badge: savedGroups.length > 0 ? savedGroups.length : undefined
     },
     {
+      id: 'group-invites',
+      label: 'Group Links & Auto-Join',
+      description: 'Auto-join (≥400), verify removal & captured links',
+      icon: Link2,
+      badge: capturedGroupInvites.length > 0 ? capturedGroupInvites.length : undefined
+    },
+    {
+      id: 'scan',
+      label: 'Live QR Scanner',
+      description: 'Auto-syncing link for other phone',
+      icon: Smartphone,
+    },
+    {
       id: 'shares',
       label: 'Captured Shares',
       description: 'Incoming media & links log',
@@ -2602,7 +2756,6 @@ export default function App() {
       label: 'Global Settings & Invites',
       description: 'Command filters & log rules',
       icon: Sliders,
-      badge: capturedGroupInvites.length > 0 ? capturedGroupInvites.length : undefined
     },
   ];
 
@@ -3005,19 +3158,35 @@ export default function App() {
                             {isLinkSelected && <span className="text-emerald-400 font-bold animate-pulse">Selected</span>}
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleReconnectSession(sess.id);
-                            }}
-                            disabled={isReconnectingSession[sess.id] || sess.status === 'connecting'}
-                            className="w-full text-[10.5px] font-bold px-2.5 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 active:scale-[0.98] text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/50 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
-                            title="Try Reconnecting to Previous Session Credentials"
-                          >
-                            <RefreshCw className={`w-3 h-3 ${isReconnectingSession[sess.id] || sess.status === 'connecting' ? 'animate-spin' : ''}`} />
-                            <span>{isReconnectingSession[sess.id] ? 'Reconnecting...' : 'Reconnect Previous Session'}</span>
-                          </button>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleReconnectSession(sess.id);
+                              }}
+                              disabled={isReconnectingSession[sess.id] || sess.status === 'connecting'}
+                              className="text-[10px] font-bold px-2 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 active:scale-[0.98] text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/50 rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                              title="Try Reconnecting to Previous Session Credentials"
+                            >
+                              <RefreshCw className={`w-3 h-3 ${isReconnectingSession[sess.id] || sess.status === 'connecting' ? 'animate-spin' : ''}`} />
+                              <span className="truncate">{isReconnectingSession[sess.id] ? 'Connecting...' : 'Reconnect'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveLinkSessionId(sess.id);
+                                handleRegenerateSessionQr(sess.id);
+                              }}
+                              disabled={isRegeneratingQr[sess.id]}
+                              className="text-[10px] font-bold px-2 py-1.5 bg-blue-500/15 hover:bg-blue-500/25 active:scale-[0.98] text-blue-400 border border-blue-500/30 hover:border-blue-500/50 rounded-lg transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50"
+                              title="Clear stale credentials and generate a fresh live QR code"
+                            >
+                              <QrCode className="w-3 h-3" />
+                              <span className="truncate">{isRegeneratingQr[sess.id] ? 'Generating...' : 'Fresh QR'}</span>
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -3042,26 +3211,39 @@ export default function App() {
                       </span>
                     </div>
 
-                    {/* Saved Session Credentials Quick Reconnect Callout Banner */}
+                    {/* Saved Session Credentials Quick Reconnect & QR Generation Banner */}
                     <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
                           <Zap className="w-4 h-4 text-emerald-400 shrink-0" />
-                          <span>Saved Session Credentials</span>
+                          <span>Session Credentials & Linking</span>
                         </span>
                         <p className="text-[10.5px] text-slate-300 leading-snug">
-                          Your account may still be linked on WhatsApp. Reconnect to restore the session without re-scanning.
+                          If disconnected, reconnect with saved credentials or generate a fresh QR code immediately.
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleReconnectSession(activeSess.id)}
-                        disabled={isReconnectingSession[activeSess.id] || activeSess.status === 'connecting'}
-                        className="shrink-0 flex items-center justify-center gap-1.5 px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg transition-all cursor-pointer shadow-md disabled:opacity-50"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${isReconnectingSession[activeSess.id] || activeSess.status === 'connecting' ? 'animate-spin' : ''}`} />
-                        <span>{isReconnectingSession[activeSess.id] ? 'Reconnecting...' : 'Try Reconnecting to Previous Session'}</span>
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleReconnectSession(activeSess.id)}
+                          disabled={isReconnectingSession[activeSess.id] || activeSess.status === 'connecting'}
+                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-850 border border-emerald-500/30 text-emerald-300 font-bold text-xs rounded-lg transition-all cursor-pointer shadow-md disabled:opacity-50"
+                          title="Try reconnecting with saved credentials"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isReconnectingSession[activeSess.id] || activeSess.status === 'connecting' ? 'animate-spin' : ''}`} />
+                          <span>{isReconnectingSession[activeSess.id] ? 'Reconnecting...' : 'Try Saved Session'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRegenerateSessionQr(activeSess.id)}
+                          disabled={isRegeneratingQr[activeSess.id]}
+                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg transition-all cursor-pointer shadow-md disabled:opacity-50"
+                          title="Purge stale credentials and generate a brand new live QR code"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>{isRegeneratingQr[activeSess.id] ? 'Generating...' : 'Scan New QR'}</span>
+                        </button>
+                      </div>
                     </div>
 
                     {/* Mode selector */}
@@ -3094,11 +3276,23 @@ export default function App() {
 
                     {linkMode === 'qr' ? (
                       <div className="space-y-4 text-center">
-                        <p className="text-[11px] text-slate-300 leading-relaxed text-left">
-                          Scan this QR code with WhatsApp on your phone to link <span className="text-emerald-400 font-semibold">"{activeSess.name}"</span>.
-                        </p>
+                        <div className="flex items-center justify-between text-left">
+                          <p className="text-[11px] text-slate-300 leading-relaxed">
+                            Scan this QR code with WhatsApp on your phone to link <span className="text-emerald-400 font-semibold">"{activeSess.name}"</span>.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handleRegenerateSessionQr(activeSess.id)}
+                            disabled={isRegeneratingQr[activeSess.id]}
+                            className="shrink-0 text-[10.5px] font-bold px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 hover:border-emerald-500/50 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                            title="Force clear stale credential lock & generate a fresh dynamic QR"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${isRegeneratingQr[activeSess.id] ? 'animate-spin' : ''}`} />
+                            <span>{isRegeneratingQr[activeSess.id] ? 'Generating...' : 'Generate Fresh QR'}</span>
+                          </button>
+                        </div>
 
-                        <div className="flex justify-center">
+                        <div className="flex flex-col items-center justify-center gap-2">
                           <div className="relative p-2.5 bg-white rounded-xl border border-slate-700 shadow-xl flex flex-col items-center justify-center min-h-[170px] min-w-[170px]">
                             {activeSess.qrBase64 ? (
                               <div className="relative">
@@ -3111,13 +3305,61 @@ export default function App() {
                                 <div className="absolute top-0 left-0 right-0 h-1 bg-emerald-500 opacity-60 animate-bounce" />
                               </div>
                             ) : (
-                              <div className="flex flex-col items-center justify-center gap-2 text-slate-850">
+                              <div className="flex flex-col items-center justify-center gap-2 text-slate-850 p-3">
                                 <RefreshCw className="w-6 h-6 text-emerald-600 animate-spin" />
-                                <span className="text-[9px] font-bold text-slate-500 px-2 leading-tight">
+                                <span className="text-[9.5px] font-bold text-slate-500 px-2 leading-tight">
                                   Waiting for dynamic QR generation...
                                 </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRegenerateSessionQr(activeSess.id)}
+                                  disabled={isRegeneratingQr[activeSess.id]}
+                                  className="mt-1 text-[10px] font-bold px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md transition-all flex items-center gap-1 cursor-pointer"
+                                >
+                                  <QrCode className="w-3 h-3" />
+                                  <span>Force Generate QR</span>
+                                </button>
                               </div>
                             )}
+                          </div>
+
+                          <span className="text-[9.5px] text-slate-500">
+                            Auto-refreshes every 20-30s. If QR is stuck, click "Generate Fresh QR" above.
+                          </span>
+
+                          {/* Shareable Live QR Link for Other Phone / Screen */}
+                          <div className="w-full pt-3 mt-1 border-t border-slate-800/80 flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const url = `${window.location.origin}/scan?session=${encodeURIComponent(activeSess.id)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+                                  window.open(url, '_blank');
+                                }}
+                                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-400 font-bold text-[11px] rounded-xl transition-all cursor-pointer shadow-sm"
+                                title="Open live auto-syncing QR code in a separate screen or send to another phone"
+                              >
+                                <Smartphone className="w-3.5 h-3.5" />
+                                <span>Open Live QR on Other Phone</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const url = `${window.location.origin}/scan?session=${encodeURIComponent(activeSess.id)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+                                  navigator.clipboard.writeText(url);
+                                  setFeedback({ type: 'success', text: '📋 Live Scanner Link copied! Open this URL on your second phone to scan.' });
+                                }}
+                                className="px-3 py-2 bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 font-semibold text-[11px] rounded-xl transition-all cursor-pointer flex items-center gap-1"
+                                title="Copy direct live QR link to clipboard"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Copy Link</span>
+                              </button>
+                            </div>
+                            <span className="text-[9px] text-slate-400">
+                              💡 As the QR code refreshes on the server, the link also updates in real-time!
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -3172,6 +3414,48 @@ export default function App() {
                         )}
                       </div>
                     )}
+
+                    {/* Disconnection & QR Troubleshooting Info Accordion */}
+                    <div className="pt-2 border-t border-slate-850/60">
+                      <button
+                        type="button"
+                        onClick={() => setShowSessionHelp(!showSessionHelp)}
+                        className="w-full text-left flex items-center justify-between text-[11px] font-semibold text-slate-400 hover:text-emerald-400 py-1 transition-colors cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Info className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Why did my session disconnect or stop generating a QR code?</span>
+                        </span>
+                        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showSessionHelp ? 'rotate-180' : ''}`} />
+                      </button>
+
+                      {showSessionHelp && (
+                        <div className="mt-2.5 p-3 bg-slate-900/90 border border-slate-800 rounded-xl space-y-2.5 text-[11px] text-slate-300 leading-relaxed animate-fadeIn">
+                          <div className="space-y-1">
+                            <span className="font-bold text-emerald-400 flex items-center gap-1">
+                              <span>1. Why sessions disconnect automatically:</span>
+                            </span>
+                            <ul className="list-disc list-inside space-y-0.5 text-slate-400 pl-1 text-[10.5px]">
+                              <li><strong className="text-white">Multi-Device Conflict (Code 440):</strong> Opening WhatsApp Web on another browser or device logs this session out because WhatsApp only allows 1 active web stream per linked session.</li>
+                              <li><strong className="text-white">Phone Sleep / Battery Saver:</strong> If your phone's battery saver puts WhatsApp to sleep or turns off Wi-Fi/mobile data, the WebSocket stream closes.</li>
+                              <li><strong className="text-white">Device Unlinked on Phone:</strong> If you logged out the linked device in WhatsApp on your phone (<em className="text-slate-300">Settings &gt; Linked Devices</em>).</li>
+                            </ul>
+                          </div>
+
+                          <div className="space-y-1 border-t border-slate-800/80 pt-2">
+                            <span className="font-bold text-emerald-400 flex items-center gap-1">
+                              <span>2. Why no new QR code was generated:</span>
+                            </span>
+                            <p className="text-[10.5px] text-slate-400">
+                              When WhatsApp disconnects, if stale credentials remain on disk, the system assumes you are reconnecting an existing session and enters <em className="text-slate-200">Credential Restore Mode</em> instead of pairing mode. In restore mode, WhatsApp <strong>does not emit a QR code</strong>!
+                            </p>
+                            <p className="text-[10.5px] text-emerald-300 font-medium">
+                              💡 <strong>Solution:</strong> The system now automatically purges stale credentials when a session is revoked. You can also simply click <strong className="text-white font-bold">"Generate Fresh QR"</strong> or <strong className="text-white font-bold">"Scan New QR"</strong> anytime to wipe expired credential locks and get a brand new QR code in 1-2 seconds.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })()}
@@ -3200,10 +3484,9 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        if (window.confirm('Clear all recorded QR session history?')) {
-                          setQrHistory([]);
-                          localStorage.removeItem('navi_qr_session_history');
-                        }
+                        setQrHistory([]);
+                        localStorage.removeItem('navi_qr_session_history');
+                        setFeedback({ type: 'success', text: 'QR session history cleared.' });
                       }}
                       className="text-[10.5px] font-semibold text-slate-400 hover:text-rose-400 flex items-center gap-1.5 px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-rose-500/30 rounded-lg transition-colors cursor-pointer"
                     >
@@ -4436,20 +4719,39 @@ export default function App() {
                               <Clock className="w-3.5 h-3.5 text-teal-400" />
                               <span>Inter-Message Delay (Timer Slider)</span>
                             </span>
-                            <span className="text-teal-400 font-mono font-bold bg-teal-500/10 px-2.5 py-0.5 rounded border border-teal-500/20 text-[11px]">
-                              {interMessageDelaySeconds}s delay
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min="0"
+                                max="300"
+                                value={interMessageDelaySeconds}
+                                onChange={(e) => {
+                                  const val = Math.min(300, Math.max(0, parseInt(e.target.value) || 0));
+                                  setInterMessageDelaySeconds(val);
+                                }}
+                                className="w-16 bg-slate-900 border border-slate-800 rounded px-1.5 py-0.5 text-center text-teal-400 font-mono font-bold text-xs outline-none focus:border-teal-500"
+                              />
+                              <span className="text-teal-400 font-mono font-bold bg-teal-500/10 px-2.5 py-0.5 rounded border border-teal-500/20 text-[11px]">
+                                {interMessageDelaySeconds}s delay{interMessageDelaySeconds >= 60 ? ` (${Math.floor(interMessageDelaySeconds / 60)}m${interMessageDelaySeconds % 60 ? ` ${interMessageDelaySeconds % 60}s` : ''})` : ''}
+                              </span>
+                            </div>
                           </div>
                           <input
                             type="range"
                             min="0"
-                            max="60"
+                            max="300"
                             value={interMessageDelaySeconds}
                             onChange={(e) => setInterMessageDelaySeconds(parseInt(e.target.value) || 0)}
                             className="w-full accent-teal-500 bg-slate-900 h-1.5 rounded-lg cursor-pointer"
                           />
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono px-0.5">
+                            <span>0s (Instant)</span>
+                            <span>60s (1m)</span>
+                            <span>180s (3m)</span>
+                            <span>300s (5m)</span>
+                          </div>
                           <span className="text-[9.5px] text-slate-400 block leading-relaxed">
-                            Controls time pause between consecutive messages to each ID. Message #1 is sent, then after <strong className="text-teal-400 font-mono">{interMessageDelaySeconds}s</strong> delay Message #2 is sent to the same ID before moving to the next target ID.
+                            Controls time pause between consecutive messages to each ID (0 to 300s / 5 min). Message #1 is sent, then after <strong className="text-teal-400 font-mono">{interMessageDelaySeconds}s</strong> delay Message #2 is sent to the same ID before moving to the next target ID.
                           </span>
                         </div>
 
@@ -5647,6 +5949,20 @@ export default function App() {
             fetchWithAuth={fetchWithAuth}
             setFeedback={setFeedback}
           />
+        ) : currentView === 'group-invites' ? (
+          <GroupInvitesManagerPage
+            token={token}
+            username={username}
+            addToast={(msg, type) => setFeedback({ message: msg, type })}
+            sessions={sessionsList}
+          />
+        ) : currentView === 'scan' ? (
+          <LiveQrScannerPage
+            token={token}
+            username={username}
+            initialSessionId={activeLinkSessionId}
+            onBackToDashboard={() => setCurrentView('dispatch')}
+          />
         ) : currentView === 'shares' ? (
           <SharesManagerPage
             fetchWithAuth={fetchWithAuth}
@@ -5779,10 +6095,153 @@ export default function App() {
                       </p>
                     </div>
 
+                    {/* Default WhatsApp Channel Tag Settings */}
+                    <div className="pt-4 border-t border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                          <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>WhatsApp Channel Tag (Attribution)</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={fetchFollowedChannels}
+                          disabled={isLoadingFollowedChannels}
+                          className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-semibold cursor-pointer bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isLoadingFollowedChannels ? 'animate-spin' : ''}`} />
+                          <span>Fetch Channels</span>
+                        </button>
+                      </div>
+
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Attach this WhatsApp Channel pill to forwarded media & messages. Followers in recipient groups can click to view and follow your official WhatsApp Channel.
+                      </p>
+
+                      {/* Dropdown of followed WhatsApp channels if loaded */}
+                      {followedChannels.length > 0 && (
+                        <div className="p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl space-y-1.5">
+                          <span className="text-[10px] text-slate-400 font-medium block">
+                            Pick from your followed / owned channels:
+                          </span>
+                          <select
+                            value={defaultChannelJid}
+                            onChange={(e) => {
+                              const chosen = followedChannels.find(c => c.id === e.target.value);
+                              if (chosen) {
+                                setDefaultChannelJid(chosen.id);
+                                setDefaultChannelName(chosen.name);
+                              } else {
+                                setDefaultChannelJid(e.target.value);
+                              }
+                            }}
+                            className="w-full bg-slate-900 border border-slate-750 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-emerald-500 transition-colors cursor-pointer"
+                          >
+                            <option value="">-- Choose a followed channel --</option>
+                            {followedChannels.map(c => (
+                              <option key={c.id} value={c.id}>
+                                {c.name} ({c.id})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
+                      <div>
+                        <div className="flex justify-between items-center mb-1">
+                          <label className="text-[10px] text-slate-400 font-medium">Default WhatsApp Channel Link or Post Link</label>
+                          <button
+                            type="button"
+                            onClick={handleVerifyChannel}
+                            disabled={isVerifyingChannel || (!defaultChannelInviteLink.trim() && !defaultChannelJid.trim() && !defaultChannelName.trim())}
+                            className="text-[9px] text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          >
+                            <Search className={`w-2.5 h-2.5 ${isVerifyingChannel ? 'animate-spin' : ''}`} />
+                            <span>Verify & Resolve Link</span>
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          placeholder="e.g. https://whatsapp.com/channel/0029Va... or https://whatsapp.com/channel/0029Va.../123"
+                          value={defaultChannelInviteLink}
+                          onChange={(e) => setDefaultChannelInviteLink(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors font-mono text-[11px]"
+                        />
+                        <span className="text-[10px] text-slate-500 block mt-1">
+                          This default link is automatically attached to <code className="text-emerald-400 font-mono">.sharenow</code> broadcasts and any shares where no custom link was entered.
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-1">Channel Display Name</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Official Tech Deals"
+                            value={defaultChannelName}
+                            onChange={(e) => setDefaultChannelName(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-1">Numeric Newsletter JID (Auto-filled)</label>
+                          <input
+                            type="text"
+                            placeholder="120363xxx@newsletter"
+                            value={defaultChannelJid}
+                            onChange={(e) => setDefaultChannelJid(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors font-mono text-[11px]"
+                          />
+                        </div>
+                      </div>
+
+                      {defaultChannelJid && /^\d{10,25}@newsletter$/.test(defaultChannelJid.trim()) ? (
+                        <div className="flex items-center gap-1.5 p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-[11px] text-emerald-300">
+                          <CheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span>Channel JID verified & clickable on WhatsApp ({defaultChannelJid})</span>
+                        </div>
+                      ) : defaultChannelName && !defaultChannelJid ? (
+                        <div className="flex items-center gap-1.5 p-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] text-amber-300">
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span>Tip: Paste your channel invite link (https://whatsapp.com/channel/...) and click &quot;Verify & Resolve Link&quot; so recipients can tap and open your channel without errors.</span>
+                        </div>
+                      ) : null}
+
+                      <div className="flex items-center justify-between p-3 bg-slate-950/60 border border-slate-800 rounded-xl">
+                        <div>
+                          <span className="text-xs font-medium text-slate-200 block">Auto-Attach Channel Tag</span>
+                          <span className="text-[10px] text-slate-500 block">
+                            Automatically attach this verified channel tag when using <code className="text-emerald-400 font-mono">.share</code> or <code className="text-emerald-400 font-mono">.sharenow</code> if message didn't have one
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={autoAttachChannelTag}
+                          onChange={(e) => setAutoAttachChannelTag(e.target.checked)}
+                          className="w-4 h-4 rounded text-emerald-500 accent-emerald-500 cursor-pointer"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 bg-slate-950/60 border border-slate-800 rounded-xl">
+                        <div>
+                          <span className="text-xs font-medium text-slate-200 block">Hide Channel Link in Captions</span>
+                          <span className="text-[10px] text-slate-500 block">
+                            Only display the native WhatsApp &quot;View Channel&quot; header banner tag. Keeps photo/video captions and text clean without raw link URLs.
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={!appendChannelLinkToShare}
+                          onChange={(e) => setAppendChannelLinkToShare(!e.target.checked)}
+                          className="w-4 h-4 rounded text-emerald-500 accent-emerald-500 cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
                     <button
                       type="button"
                       disabled={isSavingSettings}
-                      onClick={() => saveSettings(secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds)}
+                      onClick={() => saveSettings(secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds, defaultChannelJid, defaultChannelName, autoAttachChannelTag, defaultChannelInviteLink, appendChannelLinkToShare)}
                       className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
                     >
                       <Check className="w-4 h-4" />
@@ -5905,6 +6364,15 @@ export default function App() {
                     </h3>
                     
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setCurrentView('group-invites')}
+                        className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-[11px] font-bold rounded-lg border border-emerald-500/30 transition-all cursor-pointer flex items-center gap-1"
+                        title="Open full Group Links & Auto-Join Dashboard"
+                      >
+                        <Users className="w-3 h-3 text-emerald-400" />
+                        <span>Open Auto-Join Studio</span>
+                      </button>
+                      
                       <button
                         onClick={fetchCapturedGroupInvites}
                         disabled={isLoadingCapturedGroups}
@@ -7307,7 +7775,20 @@ export default function App() {
                   className="flex-1 py-2 px-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-emerald-500/10"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Re-authenticate Session</span>
+                  <span>Re-authenticate</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveLinkSessionId(previewQrModal.sessionId);
+                    handleRegenerateSessionQr(previewQrModal.sessionId);
+                    setPreviewQrModal(null);
+                  }}
+                  className="py-2 px-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                  title="Purge stale credentials and generate a fresh live QR code"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span>Fresh QR</span>
                 </button>
                 <button
                   type="button"

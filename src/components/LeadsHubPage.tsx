@@ -106,9 +106,6 @@ export default function LeadsHubPage({ fetchWithAuth, setFeedback }: LeadsHubPag
   };
 
   const handleDeleteLead = async (jid: string, name: string) => {
-    if (!confirm(`Are you sure you want to remove lead "${name}"?`)) {
-      return;
-    }
     try {
       const res = await fetchWithAuth(`/api/leads/${jid}`, {
         method: 'DELETE'

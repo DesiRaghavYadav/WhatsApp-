@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account and session credentials",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["username"]
+    },
+    "FileBackup": {
+      "title": "FileBackup",
+      "description": "Server-side file backup for persistence",
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "content": { "type": "string" },
+        "isBinary": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["path", "content"]
+    },
+    "GroupInvite": {
+      "title": "GroupInvite",
+      "description": "Captured WhatsApp group invites and auto-join status",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "url": { "type": "string" },
+        "groupName": { "type": "string" },
+        "groupSize": { "type": "number" },
+        "status": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["code", "url"]
+    }
+  },
+  "firestore": {
+    "/files/{fileId}": {
+      "schema": { "$ref": "#/entities/FileBackup" },
+      "description": "Local data file backups"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User metadata"
+    },
+    "/group_invites/{inviteId}": {
+      "schema": { "$ref": "#/entities/GroupInvite" },
+      "description": "WhatsApp group invites"
+    },
+    "/app_data/{docId}": {
+      "schema": "object",
+      "description": "Application shared data and state"
+    }
+  }
+}

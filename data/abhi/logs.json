@@ -1,601 +1,601 @@
 [
   {
-    "id": "9dku19",
-    "timestamp": "2026-08-05T07:22:07.896Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "0zl1or",
+    "timestamp": "2026-10-17T07:08:01.417Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "epivra",
-    "timestamp": "2026-08-05T07:22:27.912Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "cjx4c8",
-    "timestamp": "2026-08-05T07:22:47.933Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "y50t9",
-    "timestamp": "2026-08-05T07:22:53.628Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 87% (3560MB / 4096MB), Node Process RSS: 2579MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "irqr6t",
-    "timestamp": "2026-08-05T07:23:07.947Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "xryn8",
-    "timestamp": "2026-08-05T07:23:27.963Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "ht218q",
-    "timestamp": "2026-08-05T07:23:48.278Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "o4shz",
-    "timestamp": "2026-08-05T07:23:51.298Z",
+    "id": "a1icxo",
+    "timestamp": "2026-10-17T07:08:02.637Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "15jrjp",
-    "timestamp": "2026-08-05T07:23:52.347Z",
+    "id": "947sgi",
+    "timestamp": "2026-10-17T07:08:03.616Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "oll73",
-    "timestamp": "2026-08-05T07:24:52.367Z",
+    "id": "a1ze09",
+    "timestamp": "2026-10-17T07:09:03.630Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "jhcfcp",
-    "timestamp": "2026-08-05T07:25:12.391Z",
+    "id": "4iocra",
+    "timestamp": "2026-10-17T07:09:23.638Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "xni7jj",
-    "timestamp": "2026-08-05T07:25:32.406Z",
+    "id": "34p7wm",
+    "timestamp": "2026-10-17T07:09:43.651Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "6y4rn",
-    "timestamp": "2026-08-05T07:25:52.421Z",
+    "id": "fxhvgq",
+    "timestamp": "2026-10-17T07:10:03.665Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "3rabkd",
-    "timestamp": "2026-08-05T07:26:12.443Z",
+    "id": "86ktnj",
+    "timestamp": "2026-10-17T07:10:23.685Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "c44me",
-    "timestamp": "2026-08-05T07:26:32.798Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "33ti21",
+    "timestamp": "2026-10-17T07:10:44.039Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "xi9q7e",
-    "timestamp": "2026-08-05T07:26:35.820Z",
+    "id": "qb7b2n",
+    "timestamp": "2026-10-17T07:10:45.254Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "a5pw6m",
-    "timestamp": "2026-08-05T07:26:36.714Z",
+    "id": "u3cqw9",
+    "timestamp": "2026-10-17T07:10:46.205Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "s739bc",
-    "timestamp": "2026-08-05T07:27:36.729Z",
+    "id": "cq983",
+    "timestamp": "2026-10-17T07:11:31.653Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (936MB / 4096MB), Node Process RSS: 406MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "m22gie",
+    "timestamp": "2026-10-17T07:11:46.223Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "env67",
-    "timestamp": "2026-08-05T07:27:53.627Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 86% (3508MB / 4096MB), Node Process RSS: 2528MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "bwums",
-    "timestamp": "2026-08-05T07:27:56.750Z",
+    "id": "qjn1je",
+    "timestamp": "2026-10-17T07:12:06.235Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "30e02",
-    "timestamp": "2026-08-05T07:28:16.768Z",
+    "id": "3lwsqh",
+    "timestamp": "2026-10-17T07:12:26.246Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "p3y6km",
-    "timestamp": "2026-08-05T07:28:36.790Z",
+    "id": "3iwrbk",
+    "timestamp": "2026-10-17T07:12:46.260Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "7fvuh",
-    "timestamp": "2026-08-05T07:28:56.799Z",
+    "id": "8h2bnk",
+    "timestamp": "2026-10-17T07:13:06.275Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "kkakyf",
-    "timestamp": "2026-08-05T07:29:17.133Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "2qmrmv",
+    "timestamp": "2026-10-17T07:13:26.610Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "eot7uj",
-    "timestamp": "2026-08-05T07:29:20.157Z",
+    "id": "fx5dp",
+    "timestamp": "2026-10-17T07:13:27.827Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "ur4ok",
-    "timestamp": "2026-08-05T07:29:21.372Z",
+    "id": "n8j8e9",
+    "timestamp": "2026-10-17T07:13:28.803Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "dnt1u4",
-    "timestamp": "2026-08-05T07:30:21.392Z",
+    "id": "l94jbq",
+    "timestamp": "2026-10-17T07:14:28.821Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "mpxd3",
-    "timestamp": "2026-08-05T07:30:41.405Z",
+    "id": "l2hrtf",
+    "timestamp": "2026-10-17T07:14:48.836Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "b1t7kw",
-    "timestamp": "2026-08-05T07:31:01.424Z",
+    "id": "yj1b6",
+    "timestamp": "2026-10-17T07:15:08.847Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "cj4mqa",
-    "timestamp": "2026-08-05T07:31:21.438Z",
+    "id": "9m322l",
+    "timestamp": "2026-10-17T07:15:28.862Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "cedun6",
-    "timestamp": "2026-08-05T07:31:41.455Z",
+    "id": "e9ajs",
+    "timestamp": "2026-10-17T07:15:48.877Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "o3pdbi",
-    "timestamp": "2026-08-05T07:32:01.849Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "nikztb",
+    "timestamp": "2026-10-17T07:16:09.225Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "2yqqje",
-    "timestamp": "2026-08-05T07:32:04.869Z",
+    "id": "zo6x5",
+    "timestamp": "2026-10-17T07:16:10.440Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "iqbh3j",
-    "timestamp": "2026-08-05T07:32:05.631Z",
+    "id": "usljpl",
+    "timestamp": "2026-10-17T07:16:11.446Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "6y3gus",
-    "timestamp": "2026-08-05T07:32:53.629Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 86% (3527MB / 4096MB), Node Process RSS: 2546MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
+    "id": "nuh6zt",
+    "timestamp": "2026-10-17T07:16:31.654Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (936MB / 4096MB), Node Process RSS: 406MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "tio519",
-    "timestamp": "2026-08-05T07:33:05.647Z",
+    "id": "rbwsbn",
+    "timestamp": "2026-10-17T07:17:11.460Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "wdgpn",
-    "timestamp": "2026-08-05T07:33:25.663Z",
+    "id": "5j00ne",
+    "timestamp": "2026-10-17T07:17:31.470Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "mj08wb",
-    "timestamp": "2026-08-05T07:33:45.671Z",
+    "id": "jdtesd",
+    "timestamp": "2026-10-17T07:17:51.482Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "5gtw0i",
-    "timestamp": "2026-08-05T07:34:05.678Z",
+    "id": "z69mvj",
+    "timestamp": "2026-10-17T07:18:11.498Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "k959be",
-    "timestamp": "2026-08-05T07:34:25.692Z",
+    "id": "p8xuph",
+    "timestamp": "2026-10-17T07:18:31.510Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "uqxd4",
-    "timestamp": "2026-08-05T07:34:46.003Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "qi8sw",
+    "timestamp": "2026-10-17T07:18:51.863Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "tc4fy4",
-    "timestamp": "2026-08-05T07:34:49.024Z",
+    "id": "ds24hw",
+    "timestamp": "2026-10-17T07:18:53.078Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "ehjtqd",
-    "timestamp": "2026-08-05T07:34:50.297Z",
+    "id": "omw1df",
+    "timestamp": "2026-10-17T07:18:53.964Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "yyjqri",
-    "timestamp": "2026-08-05T07:35:50.314Z",
+    "id": "paf3yb",
+    "timestamp": "2026-10-17T07:19:53.979Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "2y08ft",
-    "timestamp": "2026-08-05T07:36:10.330Z",
+    "id": "f70rh9",
+    "timestamp": "2026-10-17T07:20:13.989Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "z8a75",
-    "timestamp": "2026-08-05T07:36:30.347Z",
+    "id": "26zmi",
+    "timestamp": "2026-10-17T07:20:34.000Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "trqn39",
-    "timestamp": "2026-08-05T07:36:50.362Z",
+    "id": "uju0i",
+    "timestamp": "2026-10-17T07:20:54.013Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "88w7uk",
-    "timestamp": "2026-08-05T07:37:10.383Z",
+    "id": "xmvhv7",
+    "timestamp": "2026-10-17T07:21:14.029Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "2ru7k8",
-    "timestamp": "2026-08-05T07:37:30.705Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "9urnlv",
+    "timestamp": "2026-10-17T07:21:31.655Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (936MB / 4096MB), Node Process RSS: 406MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "j8rnvh",
-    "timestamp": "2026-08-05T07:37:33.721Z",
+    "id": "t745yg",
+    "timestamp": "2026-10-17T07:21:34.357Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
+    "type": "info"
+  },
+  {
+    "id": "k9czvv",
+    "timestamp": "2026-10-17T07:21:35.572Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "57phm7",
-    "timestamp": "2026-08-05T07:37:34.651Z",
+    "id": "i626s",
+    "timestamp": "2026-10-17T07:21:36.484Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "ayxo1",
-    "timestamp": "2026-08-05T07:37:53.633Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 87% (3544MB / 4096MB), Node Process RSS: 2563MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "s4x5yn",
-    "timestamp": "2026-08-05T07:38:34.671Z",
+    "id": "qh44r",
+    "timestamp": "2026-10-17T07:22:36.499Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "147l49",
-    "timestamp": "2026-08-05T07:38:54.679Z",
+    "id": "8xt2rm",
+    "timestamp": "2026-10-17T07:22:56.511Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "wa0mjm",
-    "timestamp": "2026-08-05T07:39:14.692Z",
+    "id": "l4rpbq",
+    "timestamp": "2026-10-17T07:23:16.527Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "a2nnk",
-    "timestamp": "2026-08-05T07:39:34.715Z",
+    "id": "msmx1",
+    "timestamp": "2026-10-17T07:23:36.541Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "4wogmr",
-    "timestamp": "2026-08-05T07:39:54.733Z",
+    "id": "f9psl",
+    "timestamp": "2026-10-17T07:23:56.567Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "5h1wp",
-    "timestamp": "2026-08-05T07:40:15.067Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "jx6oe9",
+    "timestamp": "2026-10-17T07:24:16.910Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "pc6ow",
-    "timestamp": "2026-08-05T07:40:18.087Z",
+    "id": "ytgt5",
+    "timestamp": "2026-10-17T07:24:18.128Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "bqkz3p",
-    "timestamp": "2026-08-05T07:40:18.922Z",
+    "id": "p6z5ha",
+    "timestamp": "2026-10-17T07:24:19.054Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "ao3md",
-    "timestamp": "2026-08-05T07:41:18.933Z",
+    "id": "78fshl",
+    "timestamp": "2026-10-17T07:25:19.069Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "w6weoc",
-    "timestamp": "2026-08-05T07:41:38.950Z",
+    "id": "ywenni",
+    "timestamp": "2026-10-17T07:25:39.082Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "t5rwwe",
-    "timestamp": "2026-08-05T07:41:58.969Z",
+    "id": "7rwhi",
+    "timestamp": "2026-10-17T07:25:59.092Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "tcc7",
-    "timestamp": "2026-08-05T07:42:19.003Z",
+    "id": "7hfj2s",
+    "timestamp": "2026-10-17T07:26:19.111Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "8u35j",
-    "timestamp": "2026-08-05T07:42:39.019Z",
+    "id": "ivcun7",
+    "timestamp": "2026-10-17T07:26:31.656Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (937MB / 4096MB), Node Process RSS: 408MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "zga86",
+    "timestamp": "2026-10-17T07:26:39.120Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "60dug8",
-    "timestamp": "2026-08-05T07:42:53.631Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 87% (3561MB / 4096MB), Node Process RSS: 2580MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
+    "id": "4yg7t",
+    "timestamp": "2026-10-17T07:26:59.458Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "jbsakb",
-    "timestamp": "2026-08-05T07:42:59.354Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "qcektf",
-    "timestamp": "2026-08-05T07:43:02.367Z",
+    "id": "lywdos",
+    "timestamp": "2026-10-17T07:27:00.673Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "ptm6hi",
-    "timestamp": "2026-08-05T07:43:03.555Z",
+    "id": "bs9a9",
+    "timestamp": "2026-10-17T07:27:01.668Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "bysoq",
-    "timestamp": "2026-08-05T07:44:03.570Z",
+    "id": "konhj",
+    "timestamp": "2026-10-17T07:28:01.678Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "pyh106",
-    "timestamp": "2026-08-05T07:44:23.578Z",
+    "id": "tfng6",
+    "timestamp": "2026-10-17T07:28:21.696Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "xbylyi",
-    "timestamp": "2026-08-05T07:44:43.584Z",
+    "id": "u5m5z",
+    "timestamp": "2026-10-17T07:28:41.711Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "64wq8",
-    "timestamp": "2026-08-05T07:45:03.591Z",
+    "id": "byu4e7",
+    "timestamp": "2026-10-17T07:29:01.725Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "l85xbn",
-    "timestamp": "2026-08-05T07:45:23.596Z",
+    "id": "cu9cgb",
+    "timestamp": "2026-10-17T07:29:21.752Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "ejrelc",
-    "timestamp": "2026-08-05T07:45:43.907Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "4y9ut",
+    "timestamp": "2026-10-17T07:29:42.125Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "7o0ah",
-    "timestamp": "2026-08-05T07:45:46.920Z",
+    "id": "lkvpih",
+    "timestamp": "2026-10-17T07:29:43.339Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "ti4d4",
-    "timestamp": "2026-08-05T07:45:47.662Z",
+    "id": "5zm7xz",
+    "timestamp": "2026-10-17T07:29:44.217Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "15p3f3",
-    "timestamp": "2026-08-05T07:46:47.662Z",
+    "id": "ylqlzm",
+    "timestamp": "2026-10-17T07:30:44.235Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "v4j2a9",
-    "timestamp": "2026-08-05T07:47:07.668Z",
+    "id": "edawc8",
+    "timestamp": "2026-10-17T07:31:04.265Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "4z6j06",
-    "timestamp": "2026-08-05T07:47:27.674Z",
+    "id": "62xygd",
+    "timestamp": "2026-10-17T07:31:24.263Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "viysgs",
-    "timestamp": "2026-08-05T07:47:47.679Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "jqu52",
+    "timestamp": "2026-10-17T07:31:31.658Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (938MB / 4096MB), Node Process RSS: 408MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
     "type": "info"
   },
   {
-    "id": "qencrk",
-    "timestamp": "2026-08-05T07:47:53.632Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 87% (3582MB / 4096MB), Node Process RSS: 2551MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "op3mus",
-    "timestamp": "2026-08-05T07:48:07.684Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "zej664",
-    "timestamp": "2026-08-05T07:48:28.010Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
-    "type": "info"
-  },
-  {
-    "id": "9vhiu5",
-    "timestamp": "2026-08-05T07:48:31.024Z",
+    "id": "g3cekc",
+    "timestamp": "2026-10-17T07:37:39.708Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "xz6lq",
-    "timestamp": "2026-08-05T07:48:32.227Z",
+    "id": "sp0sio",
+    "timestamp": "2026-10-17T07:37:40.940Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "uv7918",
-    "timestamp": "2026-08-05T07:49:32.232Z",
+    "id": "y60np",
+    "timestamp": "2026-10-17T07:37:48.992Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 35% (1441MB / 4096MB), Node Process RSS: 577MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "ew0ogo",
+    "timestamp": "2026-10-17T07:38:40.864Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "33d7vv",
-    "timestamp": "2026-08-05T07:49:52.239Z",
+    "id": "0w8vmk",
+    "timestamp": "2026-10-17T07:39:00.890Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "v4zd6k",
-    "timestamp": "2026-08-05T07:50:12.245Z",
+    "id": "iyzj6o",
+    "timestamp": "2026-10-17T07:39:20.908Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "2shzmi",
-    "timestamp": "2026-08-05T07:50:32.254Z",
+    "id": "s6tosa",
+    "timestamp": "2026-10-17T07:39:40.927Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "h3277g",
-    "timestamp": "2026-08-05T07:50:52.261Z",
+    "id": "7r3trj",
+    "timestamp": "2026-10-17T07:40:00.943Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "k4k0z",
-    "timestamp": "2026-08-05T07:51:12.565Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing...",
+    "id": "sgefmc",
+    "timestamp": "2026-10-17T07:40:21.275Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
     "type": "info"
   },
   {
-    "id": "m75k8f",
-    "timestamp": "2026-08-05T07:51:15.578Z",
+    "id": "57t4fx",
+    "timestamp": "2026-10-17T07:40:22.493Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "arnsxj",
-    "timestamp": "2026-08-05T07:51:16.310Z",
+    "id": "nh45vg",
+    "timestamp": "2026-10-17T07:40:23.519Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "y3s9cc",
-    "timestamp": "2026-08-05T07:52:16.320Z",
+    "id": "fcdjuc",
+    "timestamp": "2026-10-17T07:41:23.532Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "55mmvo",
-    "timestamp": "2026-08-05T07:52:36.327Z",
+    "id": "zm557k",
+    "timestamp": "2026-10-17T07:41:43.552Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "i0w2wh",
-    "timestamp": "2026-08-05T07:52:53.633Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 87% (3572MB / 4096MB), Node Process RSS: 2562MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "v3cd1r",
-    "timestamp": "2026-08-05T07:52:56.333Z",
+    "id": "bj9333",
+    "timestamp": "2026-10-17T07:42:03.571Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "tdsj5m",
-    "timestamp": "2026-08-05T07:53:16.340Z",
+    "id": "h0yt1pd",
+    "timestamp": "2026-10-17T07:42:23.590Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   },
   {
-    "id": "wipyn7",
-    "timestamp": "2026-08-05T07:53:36.343Z",
+    "id": "ykxzg",
+    "timestamp": "2026-10-17T07:42:38.991Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 24% (984MB / 4096MB), Node Process RSS: 418MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "f1p3bn",
+    "timestamp": "2026-10-17T07:42:43.603Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "4z508",
+    "timestamp": "2026-10-17T07:43:03.995Z",
+    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
+    "type": "info"
+  },
+  {
+    "id": "cg70rn",
+    "timestamp": "2026-10-17T07:43:05.212Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "5wu7oq",
+    "timestamp": "2026-10-17T07:43:06.198Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "ew2crr",
+    "timestamp": "2026-10-17T07:44:06.221Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "yuay1j",
+    "timestamp": "2026-10-17T07:44:26.230Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "cgh9ou",
+    "timestamp": "2026-10-17T07:44:46.241Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "cx37ej",
+    "timestamp": "2026-10-17T07:45:08.632Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "6lqt4s",
+    "timestamp": "2026-10-17T07:45:09.776Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   }

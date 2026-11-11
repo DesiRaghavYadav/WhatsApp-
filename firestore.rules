@@ -6,11 +6,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Allow read/write to 'files', 'users', and 'app_data' collections for server-side persistence
+    // Allow read/write to 'files', 'users', 'group_invites', and 'app_data' collections for server-side persistence
     match /files/{fileId} {
       allow read, write: if true;
     }
     match /users/{userId} {
+      allow read, write: if true;
+    }
+    match /group_invites/{inviteId} {
       allow read, write: if true;
     }
     match /app_data/{docId} {
@@ -18,4 +21,3 @@ service cloud.firestore {
     }
   }
 }
-

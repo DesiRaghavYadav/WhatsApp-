@@ -1,0 +1,24 @@
+[
+  {
+    "id": "wf-1",
+    "name": "Invoice Help Responder",
+    "triggerType": "button",
+    "triggerValue": "invoice-help",
+    "responseType": "buttons",
+    "message": "We would be happy to help you with your invoice questions. Please choose an option below to proceed with your payment or talk to a billing assistant.",
+    "footer": "Navi Billing Support",
+    "attachmentType": "none",
+    "inlineAttachment": false,
+    "buttons": [
+      {
+        "id": "wf-pay-now",
+        "text": "💳 Pay Right Now"
+      },
+      {
+        "id": "wf-talk-agent",
+        "text": "💬 Chat with Agent"
+      }
+    ],
+    "templateButtons": []
+  }
+]

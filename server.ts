@@ -4,14 +4,13 @@ import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
 import { createServer as createViteServer } from 'vite';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers } from '@queenanya/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers, fetchLatestBaileysVersion } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, setDoc, deleteDoc, collection, getDocs, getDoc, disableNetwork, setLogLevel } from 'firebase/firestore';
 import { Jimp } from 'jimp';
-import sharp from 'sharp';
 import { getLinkPreview } from 'link-preview-js';
 
 const serverStartTime = Date.now();
@@ -558,7 +557,8 @@ function saveUserGroupDetails(username: string, jid: string, name: string, sessi
 function deleteUserSavedGroup(username: string, jid: string) {
   try {
     const groups = loadUserSavedGroups(username);
-    const filtered = groups.filter(g => g.jid !== jid);
+    const cleanJid = decodeURIComponent(jid).trim();
+    const filtered = groups.filter(g => g.jid !== jid && g.jid !== cleanJid);
     const filePath = path.join(getUserDir(username), 'saved_groups.json');
     fs.writeFileSync(filePath, JSON.stringify(filtered, null, 2), 'utf8');
   } catch (err) {
@@ -566,12 +566,25 @@ function deleteUserSavedGroup(username: string, jid: string) {
   }
 }
 
-// Captured Group Invite interfaces & database (saved to group.json)
+// Captured Group Invite interfaces & database (saved to group.json & synced to Firestore)
+export type GroupJoinStatus = 
+  | 'joined' 
+  | 'not_joined' 
+  | 'requested' 
+  | 'members_too_low' 
+  | 'removed' 
+  | 'invalid';
+
 interface CapturedGroupInvite {
+  id?: string;
   url: string;
   code: string;
+  groupJid?: string;
   senderJid: string;
   senderName: string;
+  chatJid?: string;
+  chatName?: string;
+  isOutgoing?: boolean;
   messageText: string;
   groupName: string;
   groupDescription?: string;
@@ -579,89 +592,570 @@ interface CapturedGroupInvite {
   creatorJid?: string;
   savedAt: string;
   sessionId: string;
+  status: GroupJoinStatus;
+  statusDetails?: string;
+  joinedAt?: string;
+  requestedAt?: string;
+  removedAt?: string;
+  lastCheckedAt?: string;
+  retryCount?: number;
+  nextRetryAt?: string;
+  joinApprovalMode?: boolean;
 }
 
 function loadUserGroupInvites(username: string): CapturedGroupInvite[] {
   const filePath = path.join(getUserDir(username), 'group.json');
   try {
     if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (Array.isArray(data)) {
+        return data;
+      }
     }
   } catch (err) {}
   return [];
 }
 
-function saveCapturedGroupInvite(username: string, invite: CapturedGroupInvite) {
+function saveCapturedGroupInvite(username: string, invite: CapturedGroupInvite): CapturedGroupInvite {
   try {
     const invites = loadUserGroupInvites(username);
     const existingIndex = invites.findIndex(i => i.code === invite.code);
     const filePath = path.join(getUserDir(username), 'group.json');
+    let finalInvite: CapturedGroupInvite;
     
     if (existingIndex > -1) {
       const existing = invites[existingIndex];
       const updatedName = (invite.groupName && invite.groupName !== 'Unknown Group') ? invite.groupName : existing.groupName;
-      invites[existingIndex] = {
+      finalInvite = {
         ...existing,
         ...invite,
         groupName: updatedName,
         groupDescription: invite.groupDescription || existing.groupDescription,
-        groupSize: invite.groupSize || existing.groupSize,
+        groupSize: typeof invite.groupSize === 'number' && invite.groupSize > 0 ? invite.groupSize : existing.groupSize,
+        groupJid: invite.groupJid || existing.groupJid,
+        creatorJid: invite.creatorJid || existing.creatorJid,
+        status: invite.status || existing.status || 'not_joined',
+        joinedAt: invite.joinedAt || existing.joinedAt,
+        requestedAt: invite.requestedAt || existing.requestedAt,
+        removedAt: invite.removedAt || existing.removedAt,
+        retryCount: typeof invite.retryCount === 'number' ? invite.retryCount : existing.retryCount,
+        nextRetryAt: invite.nextRetryAt || existing.nextRetryAt,
+        joinApprovalMode: invite.joinApprovalMode !== undefined ? invite.joinApprovalMode : existing.joinApprovalMode,
         savedAt: new Date().toISOString()
       };
+      invites[existingIndex] = finalInvite;
       fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
-      addLog(username, `📂 Group Link Details Updated: "${updatedName}" (${invite.code}) in group.json`, 'success');
+      addLog(username, `📂 Group Link Details Updated: "${finalInvite.groupName}" (${finalInvite.code}) - Status: ${finalInvite.status.toUpperCase()} (${finalInvite.groupSize || 0} members)`, 'info');
     } else {
-      invites.push(invite);
+      finalInvite = {
+        status: invite.status || 'not_joined',
+        ...invite,
+        savedAt: new Date().toISOString()
+      };
+      invites.push(finalInvite);
       fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
-      addLog(username, `📂 Group Link Captured: Saved "${invite.groupName}" (${invite.code}) to group.json`, 'success');
+      addLog(username, `📂 Group Link Captured: Saved "${finalInvite.groupName}" (${finalInvite.code}) - Status: ${finalInvite.status.toUpperCase()} (${finalInvite.groupSize || 0} members)`, 'success');
     }
+
+    // Mirror to Firestore group_invites collection
+    if (db && !isQuotaExceeded) {
+      try {
+        setDoc(doc(db, 'group_invites', `${username}___${finalInvite.code}`), {
+          ...finalInvite,
+          username,
+          updatedAt: new Date().toISOString()
+        }).catch(err => handleFirestoreError('Firestore group_invite backup', err));
+      } catch (e) {}
+    }
+
+    return finalInvite;
   } catch (err: any) {
     console.error('Error saving captured group invite:', err);
+    return invite;
   }
+}
+
+// Regex to capture WhatsApp group invite links
+const GROUP_LINK_REGEX = /(?:https?:\/\/)?(?:www\.)?chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9_-]{18,34})/gi;
+
+function extractGroupInviteCodes(text: string): string[] {
+  if (!text || typeof text !== 'string') return [];
+  const codes: string[] = [];
+  const regex = new RegExp(GROUP_LINK_REGEX);
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match[1]) {
+      const cleanCode = match[1].split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '').trim();
+      if (cleanCode && !codes.includes(cleanCode)) {
+        codes.push(cleanCode);
+      }
+    }
+  }
+  return codes;
+}
+
+// Comprehensive extractor that unpacks regular text, disappearing/ephemeral messages, viewOnce, templates, quotes, captions, and native invite cards
+function extractComprehensiveMessageContent(rawMsg: any): {
+  scanText: string;
+  nativeInvites: Array<{ code: string; groupName?: string; caption?: string; groupJid?: string }>;
+} {
+  let scanText = '';
+  const nativeInvites: Array<{ code: string; groupName?: string; caption?: string; groupJid?: string }> = [];
+
+  function inspectNode(node: any) {
+    if (!node || typeof node !== 'object') return;
+
+    if (typeof node.conversation === 'string') scanText += node.conversation + ' ';
+    if (typeof node.text === 'string') scanText += node.text + ' ';
+    if (node.extendedTextMessage?.text) scanText += node.extendedTextMessage.text + ' ';
+
+    if (node.imageMessage?.caption) scanText += node.imageMessage.caption + ' ';
+    if (node.videoMessage?.caption) scanText += node.videoMessage.caption + ' ';
+    if (node.documentMessage?.caption) scanText += node.documentMessage.caption + ' ';
+    if (node.audioMessage?.caption) scanText += node.audioMessage.caption + ' ';
+
+    if (node.buttonsResponseMessage?.selectedDisplayText) scanText += node.buttonsResponseMessage.selectedDisplayText + ' ';
+    if (node.buttonsResponseMessage?.selectedButtonId) scanText += node.buttonsResponseMessage.selectedButtonId + ' ';
+    if (node.listResponseMessage?.title) scanText += node.listResponseMessage.title + ' ';
+    if (node.listResponseMessage?.singleSelectReply?.selectedRowId) scanText += node.listResponseMessage.singleSelectReply.selectedRowId + ' ';
+    if (node.templateButtonReplyMessage?.selectedDisplayText) scanText += node.templateButtonReplyMessage.selectedDisplayText + ' ';
+    
+    if (node.interactiveMessage?.body?.text) scanText += node.interactiveMessage.body.text + ' ';
+    if (node.interactiveMessage?.header?.title) scanText += node.interactiveMessage.header.title + ' ';
+    if (node.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
+      try {
+        const parsed = JSON.parse(node.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
+        if (parsed.id) scanText += parsed.id + ' ';
+      } catch (e) {}
+    }
+
+    if (node.groupInviteMessage?.inviteCode) {
+      nativeInvites.push({
+        code: node.groupInviteMessage.inviteCode,
+        groupName: node.groupInviteMessage.groupName,
+        caption: node.groupInviteMessage.caption,
+        groupJid: node.groupInviteMessage.groupJid
+      });
+    }
+
+    // Ephemeral / Disappearing Messages wrapper
+    if (node.ephemeralMessage?.message) {
+      inspectNode(node.ephemeralMessage.message);
+    }
+
+    // View Once Messages wrapper
+    if (node.viewOnceMessage?.message) {
+      inspectNode(node.viewOnceMessage.message);
+    }
+    if (node.viewOnceMessageV2?.message) {
+      inspectNode(node.viewOnceMessageV2.message);
+    }
+    if (node.viewOnceMessageV2Extension?.message) {
+      inspectNode(node.viewOnceMessageV2Extension.message);
+    }
+
+    // Document with Caption wrapper
+    if (node.documentWithCaptionMessage?.message) {
+      inspectNode(node.documentWithCaptionMessage.message);
+    }
+
+    // Quoted Messages (including nested disappearing/viewOnce)
+    const ctx = node.contextInfo || 
+                node.extendedTextMessage?.contextInfo || 
+                node.imageMessage?.contextInfo || 
+                node.videoMessage?.contextInfo || 
+                node.documentMessage?.contextInfo;
+    if (ctx?.quotedMessage) {
+      inspectNode(ctx.quotedMessage);
+    }
+  }
+
+  if (rawMsg?.message) {
+    inspectNode(rawMsg.message);
+  } else if (rawMsg) {
+    inspectNode(rawMsg);
+  }
+
+  return { scanText: scanText.trim(), nativeInvites };
 }
 
 async function handleGroupInviteUrl(
   username: string, 
-  url: string, 
-  code: string, 
+  rawUrl: string, 
+  rawCode: string, 
   senderJid: string, 
   senderName: string, 
   messageText: string, 
   sessionId: string,
-  sockInstance: any
-) {
-  let groupName = 'Unknown Group';
-  let groupDescription = '';
-  let groupSize = 0;
-  let creatorJid = '';
+  sockInstance: any,
+  metaContext?: {
+    chatJid?: string;
+    chatName?: string;
+    isOutgoing?: boolean;
+    nativeName?: string;
+    nativeDesc?: string;
+    nativeGroupJid?: string;
+  }
+): Promise<CapturedGroupInvite | null> {
+  if (!rawCode) return null;
+  const code = rawCode.split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '').trim();
+  if (!code || code.length < 15) return null;
+  const url = `https://chat.whatsapp.com/${code}`;
 
+  const invites = loadUserGroupInvites(username);
+  const existing = invites.find(i => i.code === code);
+
+  let groupName = metaContext?.nativeName || existing?.groupName || 'Unknown Group';
+  let groupDescription = metaContext?.nativeDesc || existing?.groupDescription || '';
+  let groupSize = existing?.groupSize || 0;
+  let creatorJid = existing?.creatorJid || '';
+  let groupJid = metaContext?.nativeGroupJid || existing?.groupJid || '';
+  let joinApprovalMode = existing?.joinApprovalMode || false;
+  let status: GroupJoinStatus = existing?.status || 'not_joined';
+  let statusDetails = existing?.statusDetails || 'Discovered link';
+  let joinedAt = existing?.joinedAt;
+  let requestedAt = existing?.requestedAt;
+  let removedAt = existing?.removedAt;
+  let retryCount = existing?.retryCount || 0;
+  let nextRetryAt = existing?.nextRetryAt;
+
+  // 1. Fetch metadata from WhatsApp using groupGetInviteInfo
   try {
     if (sockInstance && typeof sockInstance.groupGetInviteInfo === 'function') {
       const inviteInfo = await sockInstance.groupGetInviteInfo(code);
       if (inviteInfo) {
         groupName = inviteInfo.subject || groupName;
-        groupDescription = inviteInfo.desc || inviteInfo.description || '';
-        groupSize = inviteInfo.size || 0;
-        creatorJid = inviteInfo.owner || inviteInfo.creator || '';
+        groupDescription = inviteInfo.desc || inviteInfo.description || groupDescription;
+        groupSize = typeof inviteInfo.size === 'number' ? inviteInfo.size : (inviteInfo.participants?.length || groupSize);
+        creatorJid = inviteInfo.owner || inviteInfo.creator || creatorJid;
+        groupJid = inviteInfo.id || groupJid;
+        joinApprovalMode = !!inviteInfo.joinApprovalMode;
       }
     }
   } catch (err: any) {
-    console.error(`Failed to fetch invite info for code ${code}:`, err.message);
+    const errText = err?.message || String(err);
+    console.error(`[INVITE_INFO] Failed to fetch info for code ${code}:`, errText);
+    if (errText.includes('404') || errText.includes('not-authorized') || errText.includes('gone') || errText.includes('reset')) {
+      status = 'invalid';
+      statusDetails = `Link invalid, revoked or expired (${errText})`;
+    }
   }
 
-  saveCapturedGroupInvite(username, {
+  // 2. Check if the user is already in this group
+  let alreadyJoined = false;
+  try {
+    if (sockInstance && typeof sockInstance.groupFetchAllParticipating === 'function') {
+      const participating = await sockInstance.groupFetchAllParticipating();
+      if (groupJid && participating[groupJid]) {
+        alreadyJoined = true;
+      } else if (groupName && groupName !== 'Unknown Group') {
+        const found = Object.values(participating).find((g: any) => g.subject === groupName);
+        if (found) {
+          alreadyJoined = true;
+          groupJid = (found as any).id;
+        }
+      }
+    }
+  } catch (e) {}
+
+  if (alreadyJoined) {
+    status = 'joined';
+    statusDetails = 'Already joined as an active member';
+    joinedAt = joinedAt || new Date().toISOString();
+  }
+
+  // 3. Automated Join Engine (if enabled in user settings)
+  const settings = loadUserSettings(username);
+  const minMembers = typeof settings.autoJoinMinMembers === 'number' && settings.autoJoinMinMembers > 0 ? settings.autoJoinMinMembers : 400;
+
+  if (settings.autoJoinGroupsEnabled && sockInstance && status !== 'joined' && status !== 'invalid') {
+    if (groupSize >= minMembers) {
+      addLog(username, `🎯 [AUTO-JOIN] Group "${groupName}" matches rule: ${groupSize} members >= threshold ${minMembers}. Attempting to join...`, 'info');
+      try {
+        if (typeof sockInstance.groupAcceptInvite === 'function') {
+          const joinResult = await sockInstance.groupAcceptInvite(code);
+          const resultingJid = joinResult || groupJid;
+          
+          if (joinApprovalMode) {
+            status = 'requested';
+            requestedAt = new Date().toISOString();
+            statusDetails = `Membership request submitted to group admins. Awaiting approval (${groupSize} members).`;
+            addLog(username, `⏳ [AUTO-JOIN] Group "${groupName}" requires admin approval. Join request submitted!`, 'info');
+          } else {
+            status = 'joined';
+            joinedAt = new Date().toISOString();
+            statusDetails = `Auto-joined successfully with ${groupSize} members.`;
+            groupJid = resultingJid || groupJid;
+            addLog(username, `🎉 [AUTO-JOIN] Successfully joined "${groupName}" with ${groupSize} members!`, 'success');
+            
+            if (groupJid) {
+              saveUserGroupDetails(username, groupJid, groupName, sessionId, {
+                memberCount: groupSize,
+                canUserSend: true
+              });
+            }
+          }
+        }
+      } catch (joinErr: any) {
+        const joinErrMsg = joinErr?.message || String(joinErr);
+        if (joinApprovalMode || joinErrMsg.toLowerCase().includes('approval') || joinErrMsg.toLowerCase().includes('request')) {
+          status = 'requested';
+          requestedAt = new Date().toISOString();
+          statusDetails = 'Membership request submitted to group admins. Awaiting approval.';
+          addLog(username, `⏳ [AUTO-JOIN] Group "${groupName}" requires admin approval. Request submitted!`, 'info');
+        } else {
+          status = 'not_joined';
+          statusDetails = `Auto-join attempt failed: ${joinErrMsg}`;
+          addLog(username, `⚠️ [AUTO-JOIN] Could not join "${groupName}": ${joinErrMsg}`, 'info');
+        }
+      }
+    } else if (groupSize > 0 && groupSize < minMembers) {
+      status = 'members_too_low';
+      const retryInterval = settings.autoRetryIntervalMinutes || 15;
+      nextRetryAt = new Date(Date.now() + retryInterval * 60 * 1000).toISOString();
+      statusDetails = `Members (${groupSize}) < minimum requirement (${minMembers}). Auto-retry scheduled.`;
+      addLog(username, `⏳ [AUTO-JOIN] Group "${groupName}" has ${groupSize} members (< ${minMembers} minimum). Scheduled auto-retry in ${retryInterval}m.`, 'info');
+    }
+  }
+
+  const savedInvite: CapturedGroupInvite = {
     url,
     code,
+    groupJid,
     senderJid,
     senderName,
-    messageText,
+    chatJid: metaContext?.chatJid,
+    chatName: metaContext?.chatName,
+    isOutgoing: metaContext?.isOutgoing || false,
+    messageText: (messageText || '').trim().substring(0, 300),
     groupName,
     groupDescription,
     groupSize,
     creatorJid,
     savedAt: new Date().toISOString(),
-    sessionId
-  });
+    sessionId,
+    status,
+    statusDetails,
+    joinedAt,
+    requestedAt,
+    removedAt,
+    lastCheckedAt: new Date().toISOString(),
+    retryCount,
+    nextRetryAt,
+    joinApprovalMode
+  };
+
+  return saveCapturedGroupInvite(username, savedInvite);
+}
+
+// Function to scan outbound text payloads for group links (e.g. sent from Dispatch Studio or API)
+function scanTextForGroupLinks(username: string, text: string, chatJid?: string, sessionId?: string, sockInstance?: any) {
+  if (!text) return;
+  const codes = extractGroupInviteCodes(text);
+  for (const code of codes) {
+    handleGroupInviteUrl(
+      username,
+      `https://chat.whatsapp.com/${code}`,
+      code,
+      sockInstance?.user?.id || 'me',
+      'Me (Sent via Dashboard)',
+      text.substring(0, 200),
+      sessionId || 'primary',
+      sockInstance,
+      {
+        chatJid,
+        isOutgoing: true
+      }
+    ).catch(() => {});
+  }
+}
+
+// Batch verification for all saved groups: checks if joined, detected removed, or approved
+async function verifyAllSavedGroups(username: string, sessionId?: string): Promise<{
+  success: boolean;
+  total: number;
+  joinedCount: number;
+  removedCount: number;
+  requestedCount: number;
+  lowMembersCount: number;
+  removedGroups: CapturedGroupInvite[];
+  message: string;
+}> {
+  const invites = loadUserGroupInvites(username);
+  if (invites.length === 0) {
+    return {
+      success: true,
+      total: 0,
+      joinedCount: 0,
+      removedCount: 0,
+      requestedCount: 0,
+      lowMembersCount: 0,
+      removedGroups: [],
+      message: 'No saved group links to verify.'
+    };
+  }
+
+  // Locate an active socket connection
+  const sessionConfig = loadUserSessionsConfig(username);
+  let activeSock: any = null;
+  let activeSessionId = sessionId || 'primary';
+
+  if (sessionId && sessions.get(`${username}:${sessionId}`)?.sock && sessions.get(`${username}:${sessionId}`)?.status === 'connected') {
+    activeSock = sessions.get(`${username}:${sessionId}`)!.sock;
+  } else {
+    for (const sc of sessionConfig) {
+      const s = sessions.get(`${username}:${sc.id}`);
+      if (s && s.sock && s.status === 'connected') {
+        activeSock = s.sock;
+        activeSessionId = sc.id;
+        break;
+      }
+    }
+  }
+
+  if (!activeSock) {
+    throw new Error('No active connected WhatsApp session available to verify group memberships. Please connect a session first.');
+  }
+
+  let participatingGroups: Record<string, any> = {};
+  try {
+    participatingGroups = await activeSock.groupFetchAllParticipating();
+  } catch (err: any) {
+    console.error('Error fetching participating groups:', err);
+    throw new Error(`Failed to query participating groups from WhatsApp: ${err.message}`);
+  }
+
+  const removedGroups: CapturedGroupInvite[] = [];
+  let joinedCount = 0;
+  let removedCount = 0;
+  let requestedCount = 0;
+  let lowMembersCount = 0;
+  const now = new Date().toISOString();
+
+  const settings = loadUserSettings(username);
+  const minMembers = settings.autoJoinMinMembers || 400;
+
+  for (let i = 0; i < invites.length; i++) {
+    const invite = invites[i];
+    invite.lastCheckedAt = now;
+
+    // 1. Resolve Group JID if not present
+    if (!invite.groupJid) {
+      const matched = Object.values(participatingGroups).find((g: any) => g.subject === invite.groupName);
+      if (matched) {
+        invite.groupJid = (matched as any).id;
+      } else {
+        try {
+          const info = await activeSock.groupGetInviteInfo(invite.code);
+          if (info?.id) {
+            invite.groupJid = info.id;
+            invite.groupSize = typeof info.size === 'number' ? info.size : (info.participants?.length || invite.groupSize);
+            invite.groupName = info.subject || invite.groupName;
+            invite.creatorJid = info.owner || info.creator || invite.creatorJid;
+            invite.joinApprovalMode = !!info.joinApprovalMode;
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 2. Check current participating membership
+    const isCurrentlyInGroup = !!(invite.groupJid && participatingGroups[invite.groupJid]);
+
+    if (isCurrentlyInGroup) {
+      invite.status = 'joined';
+      invite.joinedAt = invite.joinedAt || now;
+      invite.statusDetails = 'Active member in group';
+      invite.removedAt = undefined;
+      joinedCount++;
+
+      const liveGroupMeta = participatingGroups[invite.groupJid!];
+      if (liveGroupMeta) {
+        invite.groupName = liveGroupMeta.subject || invite.groupName;
+        invite.groupSize = liveGroupMeta.size || liveGroupMeta.participants?.length || invite.groupSize;
+      }
+
+      saveUserGroupDetails(username, invite.groupJid!, invite.groupName, activeSessionId, {
+        memberCount: invite.groupSize,
+        canUserSend: true
+      });
+    } else {
+      if (invite.status === 'joined') {
+        // Was recorded joined, but no longer in group => user was removed!
+        invite.status = 'removed';
+        invite.removedAt = invite.removedAt || now;
+        invite.statusDetails = 'Removed from group by admin or group no longer active';
+        removedCount++;
+        removedGroups.push(invite);
+        addLog(username, `⚠️ [REMOVED DETECTED] You were removed from "${invite.groupName}" (${invite.code}). Request admin manually to rejoin.`, 'info');
+      } else if (invite.status === 'requested') {
+        requestedCount++;
+        invite.statusDetails = 'Membership request pending admin approval.';
+      } else if (invite.status === 'members_too_low') {
+        try {
+          const info = await activeSock.groupGetInviteInfo(invite.code);
+          if (info) {
+            invite.groupSize = typeof info.size === 'number' ? info.size : (info.participants?.length || invite.groupSize);
+            invite.groupName = info.subject || invite.groupName;
+            if (invite.groupSize >= minMembers && settings.autoJoinGroupsEnabled) {
+              try {
+                const jid = await activeSock.groupAcceptInvite(invite.code);
+                if (invite.joinApprovalMode) {
+                  invite.status = 'requested';
+                  invite.requestedAt = now;
+                  invite.statusDetails = 'Join request submitted. Awaiting admin approval.';
+                  requestedCount++;
+                } else {
+                  invite.status = 'joined';
+                  invite.joinedAt = now;
+                  invite.groupJid = jid || invite.groupJid;
+                  invite.statusDetails = `Auto-joined after member count grew to ${invite.groupSize}!`;
+                  joinedCount++;
+                }
+              } catch (err: any) {
+                lowMembersCount++;
+              }
+            } else {
+              lowMembersCount++;
+            }
+          }
+        } catch (e) {
+          lowMembersCount++;
+        }
+      } else {
+        if (settings.autoJoinGroupsEnabled && invite.groupSize && invite.groupSize >= minMembers) {
+          try {
+            const jid = await activeSock.groupAcceptInvite(invite.code);
+            if (invite.joinApprovalMode) {
+              invite.status = 'requested';
+              invite.requestedAt = now;
+              requestedCount++;
+            } else {
+              invite.status = 'joined';
+              invite.joinedAt = now;
+              invite.groupJid = jid || invite.groupJid;
+              joinedCount++;
+            }
+          } catch (e) {}
+        }
+      }
+    }
+  }
+
+  const filePath = path.join(getUserDir(username), 'group.json');
+  fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
+
+  addLog(username, `✅ [VERIFY ALL GROUPS] Completed check across ${invites.length} saved groups. Active Joined: ${joinedCount}, Removed: ${removedCount}, Pending Approval: ${requestedCount}`, 'success');
+
+  return {
+    success: true,
+    total: invites.length,
+    joinedCount,
+    removedCount,
+    requestedCount,
+    lowMembersCount,
+    removedGroups,
+    message: `Verification complete: ${joinedCount} joined, ${removedCount} removed, ${requestedCount} pending approval out of ${invites.length} total saved groups.`
+  };
 }
 
 function getAssignedSessionIdForRecipient(username: string, recipient: string, recipientType: string, defaultSessionId: string, validSessions: string[]): string {
@@ -2058,6 +2552,15 @@ interface UserSettings {
   disableTextProcessing: boolean;
   shareBatchSize: number;
   shareBatchPauseSeconds: number;
+  defaultChannelJid?: string;
+  defaultChannelName?: string;
+  defaultChannelInviteLink?: string;
+  autoAttachChannelTag?: boolean;
+  appendChannelLinkToShare?: boolean; // defaults to false (link hidden from caption; native View Channel tag displayed)
+  autoJoinGroupsEnabled?: boolean;
+  autoJoinMinMembers?: number; // defaults to 400
+  autoRetryIntervalMinutes?: number; // defaults to 15
+  autoRequestAdminApproval?: boolean; // defaults to true
 }
 
 function loadUserSettings(username: string): UserSettings {
@@ -2069,7 +2572,16 @@ function loadUserSettings(username: string): UserSettings {
         secretPrefix: data.secretPrefix || '.',
         disableTextProcessing: !!data.disableTextProcessing,
         shareBatchSize: typeof data.shareBatchSize === 'number' && data.shareBatchSize > 0 ? data.shareBatchSize : 5,
-        shareBatchPauseSeconds: typeof data.shareBatchPauseSeconds === 'number' && data.shareBatchPauseSeconds >= 0 ? data.shareBatchPauseSeconds : 10
+        shareBatchPauseSeconds: typeof data.shareBatchPauseSeconds === 'number' && data.shareBatchPauseSeconds >= 0 ? data.shareBatchPauseSeconds : 10,
+        defaultChannelJid: data.defaultChannelJid ? String(data.defaultChannelJid).trim() : undefined,
+        defaultChannelName: data.defaultChannelName ? String(data.defaultChannelName).trim() : undefined,
+        defaultChannelInviteLink: data.defaultChannelInviteLink ? String(data.defaultChannelInviteLink).trim() : undefined,
+        autoAttachChannelTag: !!data.autoAttachChannelTag,
+        appendChannelLinkToShare: !!data.appendChannelLinkToShare,
+        autoJoinGroupsEnabled: !!data.autoJoinGroupsEnabled,
+        autoJoinMinMembers: typeof data.autoJoinMinMembers === 'number' && data.autoJoinMinMembers > 0 ? data.autoJoinMinMembers : 400,
+        autoRetryIntervalMinutes: typeof data.autoRetryIntervalMinutes === 'number' && data.autoRetryIntervalMinutes > 0 ? data.autoRetryIntervalMinutes : 15,
+        autoRequestAdminApproval: data.autoRequestAdminApproval !== undefined ? !!data.autoRequestAdminApproval : true
       };
     }
   } catch (err) {}
@@ -2078,7 +2590,13 @@ function loadUserSettings(username: string): UserSettings {
     secretPrefix: '.',
     disableTextProcessing: false,
     shareBatchSize: 5,
-    shareBatchPauseSeconds: 10
+    shareBatchPauseSeconds: 10,
+    autoAttachChannelTag: false,
+    appendChannelLinkToShare: false,
+    autoJoinGroupsEnabled: false,
+    autoJoinMinMembers: 400,
+    autoRetryIntervalMinutes: 15,
+    autoRequestAdminApproval: true
   };
   try {
     fs.writeFileSync(filePath, JSON.stringify(defaultSettings, null, 2), 'utf8');
@@ -2094,13 +2612,304 @@ function saveUserSettings(username: string, settings: Partial<UserSettings>) {
       secretPrefix: settings.secretPrefix || existing.secretPrefix || '.',
       disableTextProcessing: settings.disableTextProcessing !== undefined ? settings.disableTextProcessing : existing.disableTextProcessing,
       shareBatchSize: typeof settings.shareBatchSize === 'number' && settings.shareBatchSize > 0 ? settings.shareBatchSize : existing.shareBatchSize,
-      shareBatchPauseSeconds: typeof settings.shareBatchPauseSeconds === 'number' && settings.shareBatchPauseSeconds >= 0 ? settings.shareBatchPauseSeconds : existing.shareBatchPauseSeconds
+      shareBatchPauseSeconds: typeof settings.shareBatchPauseSeconds === 'number' && settings.shareBatchPauseSeconds >= 0 ? settings.shareBatchPauseSeconds : existing.shareBatchPauseSeconds,
+      defaultChannelJid: settings.defaultChannelJid !== undefined ? (settings.defaultChannelJid ? settings.defaultChannelJid.trim() : undefined) : existing.defaultChannelJid,
+      defaultChannelName: settings.defaultChannelName !== undefined ? (settings.defaultChannelName ? settings.defaultChannelName.trim() : undefined) : existing.defaultChannelName,
+      defaultChannelInviteLink: settings.defaultChannelInviteLink !== undefined ? (settings.defaultChannelInviteLink ? settings.defaultChannelInviteLink.trim() : undefined) : existing.defaultChannelInviteLink,
+      autoAttachChannelTag: settings.autoAttachChannelTag !== undefined ? !!settings.autoAttachChannelTag : existing.autoAttachChannelTag,
+      appendChannelLinkToShare: settings.appendChannelLinkToShare !== undefined ? !!settings.appendChannelLinkToShare : existing.appendChannelLinkToShare,
+      autoJoinGroupsEnabled: settings.autoJoinGroupsEnabled !== undefined ? !!settings.autoJoinGroupsEnabled : existing.autoJoinGroupsEnabled,
+      autoJoinMinMembers: typeof settings.autoJoinMinMembers === 'number' && settings.autoJoinMinMembers > 0 ? settings.autoJoinMinMembers : (existing.autoJoinMinMembers || 400),
+      autoRetryIntervalMinutes: typeof settings.autoRetryIntervalMinutes === 'number' && settings.autoRetryIntervalMinutes > 0 ? settings.autoRetryIntervalMinutes : (existing.autoRetryIntervalMinutes || 15),
+      autoRequestAdminApproval: settings.autoRequestAdminApproval !== undefined ? !!settings.autoRequestAdminApproval : (existing.autoRequestAdminApproval !== undefined ? existing.autoRequestAdminApproval : true)
     };
     fs.writeFileSync(filePath, JSON.stringify(updated, null, 2), 'utf8');
     addLog(username, `User settings updated successfully.`, 'success');
   } catch (err: any) {
     addLog(username, `Failed to save user settings: ${err.message}`, 'error');
   }
+}
+
+// WhatsApp Channel Cache & Discovery Helper
+interface CachedChannel {
+  id: string; // Genuine numeric JID e.g. 120363xxxxxxxx@newsletter
+  name: string;
+  subscribers?: number;
+  invite?: string;
+  role?: string;
+  description?: string;
+  verified?: boolean;
+}
+
+function loadUserChannels(username: string): CachedChannel[] {
+  const filePath = path.join(getUserDir(username), 'channels.json');
+  try {
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+  } catch (err) {}
+  return [];
+}
+
+function saveUserChannels(username: string, channels: CachedChannel[]) {
+  const filePath = path.join(getUserDir(username), 'channels.json');
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(channels, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to save user channels:', err);
+  }
+}
+
+// Validates strictly numeric WhatsApp newsletter JID format (e.g. 120363294819284719@newsletter)
+function isNumericNewsletterJid(jid?: string | null): boolean {
+  if (!jid || typeof jid !== 'string') return false;
+  return /^\d{10,25}@newsletter$/.test(jid.trim());
+}
+
+// Safely extracts invite code from WhatsApp channel URLs (e.g. https://whatsapp.com/channel/0029VaZ9xyz or .../0029VaZ9xyz/45)
+function extractChannelInviteCode(input?: string | null): string | null {
+  if (!input || typeof input !== 'string') return null;
+  const str = input.trim();
+  const match = str.match(/(?:whatsapp\.com\/channel\/|channel\/)([0-9A-Za-z_-]{16,32})/i) ||
+                str.match(/^([0-9A-Za-z_-]{16,32})$/);
+  if (match) return match[1];
+  return null;
+}
+
+// Safely extracts specific channel message ID / post counter from WhatsApp channel link
+// e.g. https://whatsapp.com/channel/0029VaZ9xyz/123 -> returns 123
+function extractChannelMessageId(input?: string | null): number | undefined {
+  if (!input || typeof input !== 'string') return undefined;
+  const str = input.trim();
+  const match = str.match(/(?:whatsapp\.com\/channel\/|channel\/)[0-9A-Za-z_-]{16,32}\/(\d+)/i);
+  if (match && match[1]) {
+    const num = parseInt(match[1], 10);
+    return isNaN(num) ? undefined : num;
+  }
+  return undefined;
+}
+
+// Master WhatsApp Channel Tag Resolver:
+// Correctly maps channel names, invite links, or codes to authentic WhatsApp Channel JIDs
+// Extracts post/message IDs for direct message jumping and builds authentic links
+async function resolveWhatsAppChannel(
+  sock: any,
+  username: string,
+  rawInput?: string,
+  preDetected?: { newsletterJid?: string; newsletterName?: string; serverMessageId?: number; channelLink?: string } | null,
+  overrideLink?: string
+): Promise<{
+  newsletterJid: string;
+  newsletterName: string;
+  serverMessageId?: number;
+  inviteLink?: string;
+  isVerified: boolean;
+  warning?: string;
+} | null> {
+  const settings = loadUserSettings(username);
+  let cachedChannels = loadUserChannels(username);
+
+  // If connected socket exists and cache is empty, attempt to populate user channels
+  if (sock && typeof sock.newsletterFetchAllParticipating === 'function' && cachedChannels.length === 0) {
+    try {
+      const res: any = await sock.newsletterFetchAllParticipating();
+      const list = Array.isArray(res) ? res : (res && typeof res === 'object' ? Object.values(res) : []);
+      if (list.length > 0) {
+        cachedChannels = list.map((c: any) => ({
+          id: c.id || c.jid || '',
+          name: c.name || c.subject || c.thread_metadata?.name?.text || 'WhatsApp Channel',
+          subscribers: Number(c.subscribers || c.subscribers_count || 0),
+          role: c.viewer_metadata?.role || c.role || 'subscriber',
+          invite: c.thread_metadata?.invite || c.invite || '',
+          verified: true
+        })).filter(c => isNumericNewsletterJid(c.id));
+        saveUserChannels(username, cachedChannels);
+      }
+    } catch (err) {}
+  }
+
+  const trimmedInput = (rawInput || '').trim();
+
+  // Case 1: Quoted message already has verified numeric channel JID and no override argument was given
+  if (!trimmedInput && preDetected?.newsletterJid && isNumericNewsletterJid(preDetected.newsletterJid)) {
+    const sId = preDetected.serverMessageId || 1;
+    let autoLink = preDetected.channelLink || overrideLink || settings.defaultChannelInviteLink;
+    if (!autoLink) {
+      const match = cachedChannels.find(c => c.id === preDetected.newsletterJid);
+      if (match?.invite) {
+        autoLink = sId > 1 ? `https://whatsapp.com/channel/${match.invite}/${sId}` : `https://whatsapp.com/channel/${match.invite}`;
+      }
+    }
+    return {
+      newsletterJid: preDetected.newsletterJid,
+      newsletterName: preDetected.newsletterName || 'WhatsApp Channel',
+      serverMessageId: sId,
+      inviteLink: autoLink,
+      isVerified: true
+    };
+  }
+
+  // Case 2: Parse "Custom Name | ChannelLink" syntax (e.g. "Special Deals | https://whatsapp.com/channel/0029Va...")
+  let customDisplayName = '';
+  let linkOrJidCandidate = trimmedInput;
+  if (trimmedInput.includes('|')) {
+    const parts = trimmedInput.split('|');
+    customDisplayName = parts[0].trim();
+    linkOrJidCandidate = parts.slice(1).join('|').trim();
+  }
+
+  const msgIdFromCandidate = extractChannelMessageId(linkOrJidCandidate) || extractChannelMessageId(overrideLink);
+
+  // Case 3: Link or invite code candidate
+  const inviteCode = extractChannelInviteCode(linkOrJidCandidate) || extractChannelInviteCode(overrideLink);
+  if (inviteCode) {
+    const sMsgId = msgIdFromCandidate || preDetected?.serverMessageId || 1;
+    const directLink = sMsgId > 1
+      ? `https://whatsapp.com/channel/${inviteCode}/${sMsgId}`
+      : `https://whatsapp.com/channel/${inviteCode}`;
+
+    // Fast cache check for known invite code
+    const matchCached = cachedChannels.find(c => c.invite === inviteCode);
+    if (matchCached && isNumericNewsletterJid(matchCached.id)) {
+      return {
+        newsletterJid: matchCached.id,
+        newsletterName: customDisplayName || matchCached.name,
+        serverMessageId: sMsgId,
+        inviteLink: directLink,
+        isVerified: true
+      };
+    }
+
+    if (sock && typeof sock.newsletterMetadata === 'function') {
+      try {
+        const meta: any = await sock.newsletterMetadata('invite', inviteCode);
+        if (meta && meta.id && isNumericNewsletterJid(meta.id)) {
+          const officialName = meta.name || meta.thread_metadata?.name?.text || 'WhatsApp Channel';
+          const resolvedChannel: CachedChannel = {
+            id: meta.id,
+            name: officialName,
+            subscribers: Number(meta.subscribers || meta.subscribers_count || 0),
+            invite: inviteCode,
+            verified: true
+          };
+          if (!cachedChannels.find(c => c.id === resolvedChannel.id)) {
+            cachedChannels.push(resolvedChannel);
+            saveUserChannels(username, cachedChannels);
+          }
+          return {
+            newsletterJid: meta.id,
+            newsletterName: customDisplayName || officialName,
+            serverMessageId: sMsgId,
+            inviteLink: directLink,
+            isVerified: true
+          };
+        }
+      } catch (err: any) {
+        console.warn(`[RESOLVE CHANNEL] Failed newsletterMetadata('invite', ${inviteCode}):`, err?.message);
+      }
+    }
+  }
+
+  // Case 4: Pure numeric JID (e.g. 120363294819284719@newsletter or 120363294819284719)
+  const numericJidCandidate = linkOrJidCandidate.endsWith('@newsletter') ? linkOrJidCandidate : `${linkOrJidCandidate}@newsletter`;
+  if (isNumericNewsletterJid(numericJidCandidate)) {
+    let channelName = customDisplayName;
+    const matchCached = cachedChannels.find(c => c.id === numericJidCandidate);
+    if (matchCached) {
+      channelName = channelName || matchCached.name;
+    } else if (sock && typeof sock.newsletterMetadata === 'function') {
+      try {
+        const meta: any = await sock.newsletterMetadata('jid', numericJidCandidate);
+        if (meta) {
+          channelName = channelName || meta.name || meta.thread_metadata?.name?.text;
+        }
+      } catch (e) {}
+    }
+    const sMsgId = msgIdFromCandidate || preDetected?.serverMessageId || 1;
+    const fallbackLink = matchCached?.invite
+      ? (sMsgId > 1 ? `https://whatsapp.com/channel/${matchCached.invite}/${sMsgId}` : `https://whatsapp.com/channel/${matchCached.invite}`)
+      : (overrideLink || settings.defaultChannelInviteLink);
+
+    return {
+      newsletterJid: numericJidCandidate,
+      newsletterName: channelName || 'WhatsApp Channel',
+      serverMessageId: sMsgId,
+      inviteLink: fallbackLink,
+      isVerified: true
+    };
+  }
+
+  // Case 5: The user provided a Channel Name (e.g. "Official Tech Deals", "Crypto Alerts")
+  const searchName = (customDisplayName || trimmedInput).toLowerCase();
+  if (searchName) {
+    // 5a. Look in cached channels (exact match first, then substring)
+    const exactMatch = cachedChannels.find(c => c.name.toLowerCase() === searchName);
+    const partialMatch = cachedChannels.find(c => c.name.toLowerCase().includes(searchName) || searchName.includes(c.name.toLowerCase()));
+    const matched = exactMatch || partialMatch;
+
+    if (matched && isNumericNewsletterJid(matched.id)) {
+      const sMsgId = msgIdFromCandidate || preDetected?.serverMessageId || 1;
+      const matchedLink = matched.invite 
+        ? (sMsgId > 1 ? `https://whatsapp.com/channel/${matched.invite}/${sMsgId}` : `https://whatsapp.com/channel/${matched.invite}`)
+        : (overrideLink || settings.defaultChannelInviteLink);
+
+      return {
+        newsletterJid: matched.id,
+        newsletterName: customDisplayName || matched.name,
+        serverMessageId: sMsgId,
+        inviteLink: matchedLink,
+        isVerified: true
+      };
+    }
+
+    // 5b. Check if user configured a verified defaultChannelJid in Settings
+    if (settings.defaultChannelJid && isNumericNewsletterJid(settings.defaultChannelJid)) {
+      const sMsgId = msgIdFromCandidate || preDetected?.serverMessageId || 1;
+      return {
+        newsletterJid: settings.defaultChannelJid,
+        newsletterName: customDisplayName || trimmedInput || settings.defaultChannelName || 'WhatsApp Channel',
+        serverMessageId: sMsgId,
+        inviteLink: overrideLink || settings.defaultChannelInviteLink,
+        isVerified: true
+      };
+    }
+
+    // 5c. If the original message already has a verified numeric channel, use that verified JID with custom name!
+    if (preDetected?.newsletterJid && isNumericNewsletterJid(preDetected.newsletterJid)) {
+      const sMsgId = msgIdFromCandidate || preDetected.serverMessageId || 1;
+      return {
+        newsletterJid: preDetected.newsletterJid,
+        newsletterName: customDisplayName || trimmedInput || preDetected.newsletterName || 'WhatsApp Channel',
+        serverMessageId: sMsgId,
+        inviteLink: overrideLink || preDetected.channelLink || settings.defaultChannelInviteLink,
+        isVerified: true
+      };
+    }
+
+    // 5d. Name was provided, but NO verified channel JID could be found
+    return {
+      newsletterJid: '',
+      newsletterName: customDisplayName || trimmedInput,
+      serverMessageId: 1,
+      inviteLink: overrideLink || settings.defaultChannelInviteLink,
+      isVerified: false,
+      warning: `WhatsApp Channel "${customDisplayName || trimmedInput}" is not linked to a verified Channel JID. Please provide the channel invite link (e.g. https://whatsapp.com/channel/...) or select it in Settings so the channel tag opens without error.`
+    };
+  }
+
+  // Case 6: No argument provided, check if default channel is configured in Settings
+  if (settings.autoAttachChannelTag && settings.defaultChannelJid && isNumericNewsletterJid(settings.defaultChannelJid)) {
+    const sMsgId = preDetected?.serverMessageId || 1;
+    return {
+      newsletterJid: settings.defaultChannelJid,
+      newsletterName: settings.defaultChannelName || 'WhatsApp Channel',
+      serverMessageId: sMsgId,
+      inviteLink: overrideLink || settings.defaultChannelInviteLink,
+      isVerified: true
+    };
+  }
+
+  return null;
 }
 
 // Captured Shares System
@@ -2113,6 +2922,16 @@ interface CapturedShare {
   quotedMessageId: string;
   quotedMessage: any;
   displayText: string;
+  mediaType?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'other';
+  caption?: string;
+  channelInfo?: {
+    newsletterJid: string;
+    newsletterName: string;
+    serverMessageId?: number;
+    channelLink?: string;
+  };
+  channelLink?: string;
+  appendChannelLink?: boolean;
   status: 'pending' | 'forwarded';
   forwardedTo: string[];
 }
@@ -2136,16 +2955,312 @@ function saveUserShares(username: string, shares: CapturedShare[]) {
   }
 }
 
+function unwrapQuotedMessage(quotedMsg: any): any {
+  if (!quotedMsg || typeof quotedMsg !== 'object') return quotedMsg;
+  if (quotedMsg.viewOnceMessage?.message) return unwrapQuotedMessage(quotedMsg.viewOnceMessage.message);
+  if (quotedMsg.viewOnceMessageV2?.message) return unwrapQuotedMessage(quotedMsg.viewOnceMessageV2.message);
+  if (quotedMsg.viewOnceMessageV2Extension?.message) return unwrapQuotedMessage(quotedMsg.viewOnceMessageV2Extension.message);
+  if (quotedMsg.ephemeralMessage?.message) return unwrapQuotedMessage(quotedMsg.ephemeralMessage.message);
+  if (quotedMsg.documentWithCaptionMessage?.message) return unwrapQuotedMessage(quotedMsg.documentWithCaptionMessage.message);
+  if (quotedMsg.imageMessageWithCaption?.message) return unwrapQuotedMessage(quotedMsg.imageMessageWithCaption.message);
+  if (quotedMsg.videoMessageWithCaption?.message) return unwrapQuotedMessage(quotedMsg.videoMessageWithCaption.message);
+  return quotedMsg;
+}
+
+function extractMsgContextInfo(msgMessage: any): any {
+  if (!msgMessage) return null;
+  if (msgMessage.contextInfo) return msgMessage.contextInfo;
+  
+  const innerMsg = msgMessage.ephemeralMessage?.message ||
+                   msgMessage.viewOnceMessage?.message ||
+                   msgMessage.viewOnceMessageV2?.message ||
+                   msgMessage.documentWithCaptionMessage?.message;
+                   
+  if (innerMsg) {
+    return extractMsgContextInfo(innerMsg);
+  }
+
+  for (const key of Object.keys(msgMessage)) {
+    if (msgMessage[key] && typeof msgMessage[key] === 'object' && msgMessage[key].contextInfo) {
+      return msgMessage[key].contextInfo;
+    }
+  }
+  return null;
+}
+
+function extractNewsletterInfo(contextInfo: any, rawQuotedMsg: any, remoteJid?: string): {
+  newsletterJid: string;
+  newsletterName: string;
+  serverMessageId?: number;
+} | null {
+  // Check 1: direct in contextInfo
+  if (contextInfo?.forwardedNewsletterMessageInfo?.newsletterJid) {
+    return {
+      newsletterJid: String(contextInfo.forwardedNewsletterMessageInfo.newsletterJid).trim(),
+      newsletterName: String(contextInfo.forwardedNewsletterMessageInfo.newsletterName || 'WhatsApp Channel').trim(),
+      serverMessageId: Number(contextInfo.forwardedNewsletterMessageInfo.serverMessageId) || 1
+    };
+  }
+
+  // Check 2: in inner quoted message contextInfo
+  if (rawQuotedMsg && typeof rawQuotedMsg === 'object') {
+    const innerContext = extractMsgContextInfo(rawQuotedMsg);
+    if (innerContext?.forwardedNewsletterMessageInfo?.newsletterJid) {
+      return {
+        newsletterJid: String(innerContext.forwardedNewsletterMessageInfo.newsletterJid).trim(),
+        newsletterName: String(innerContext.forwardedNewsletterMessageInfo.newsletterName || 'WhatsApp Channel').trim(),
+        serverMessageId: Number(innerContext.forwardedNewsletterMessageInfo.serverMessageId) || 1
+      };
+    }
+
+    for (const key of Object.keys(rawQuotedMsg)) {
+      const field = rawQuotedMsg[key];
+      if (field && typeof field === 'object' && field.contextInfo?.forwardedNewsletterMessageInfo?.newsletterJid) {
+        return {
+          newsletterJid: String(field.contextInfo.forwardedNewsletterMessageInfo.newsletterJid).trim(),
+          newsletterName: String(field.contextInfo.forwardedNewsletterMessageInfo.newsletterName || 'WhatsApp Channel').trim(),
+          serverMessageId: Number(field.contextInfo.forwardedNewsletterMessageInfo.serverMessageId) || 1
+        };
+      }
+    }
+  }
+
+  // Check 3: Check if source JID or participant is a newsletter
+  const jidCandidates = [remoteJid, contextInfo?.participant, contextInfo?.remoteJid];
+  for (const jid of jidCandidates) {
+    if (typeof jid === 'string' && jid.endsWith('@newsletter')) {
+      return {
+        newsletterJid: jid.trim(),
+        newsletterName: 'WhatsApp Channel',
+        serverMessageId: Number(contextInfo?.stanzaId) || 1
+      };
+    }
+  }
+
+  return null;
+}
+
+function detectMediaType(quotedMsg: any): 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'other' {
+  if (!quotedMsg || typeof quotedMsg !== 'object') return 'text';
+  const unwrapped = unwrapQuotedMessage(quotedMsg);
+  if (typeof unwrapped === 'string') return 'text';
+  if (unwrapped.imageMessage) return 'image';
+  if (unwrapped.videoMessage) return 'video';
+  if (unwrapped.audioMessage) return 'audio';
+  if (unwrapped.documentMessage) return 'document';
+  if (unwrapped.stickerMessage) return 'sticker';
+  if (unwrapped.conversation || unwrapped.extendedTextMessage) return 'text';
+  return 'other';
+}
+
+function extractCaptionOrText(quotedMsg: any): string {
+  if (!quotedMsg) return '';
+  const unwrapped = unwrapQuotedMessage(quotedMsg);
+  if (typeof unwrapped === 'string') return unwrapped;
+  if (unwrapped.conversation) return unwrapped.conversation;
+  if (unwrapped.extendedTextMessage?.text) return unwrapped.extendedTextMessage.text;
+  if (unwrapped.imageMessage?.caption) return unwrapped.imageMessage.caption;
+  if (unwrapped.videoMessage?.caption) return unwrapped.videoMessage.caption;
+  if (unwrapped.documentMessage?.caption) return unwrapped.documentMessage.caption;
+  return '';
+}
+
 function getMessagePreview(message: any): string {
   if (!message) return '[Empty Message]';
-  if (message.conversation) return message.conversation;
-  if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
-  if (message.imageMessage) return `🖼️ [Image] ${message.imageMessage.caption || ''}`;
-  if (message.videoMessage) return `🎥 [Video] ${message.videoMessage.caption || ''}`;
-  if (message.audioMessage) return '🎵 [Audio]';
-  if (message.documentMessage) return `📄 [Document] ${message.documentMessage.fileName || ''}`;
-  if (message.stickerMessage) return '✨ [Sticker]';
+  const unwrapped = unwrapQuotedMessage(message);
+  if (typeof unwrapped === 'string') return unwrapped;
+  if (unwrapped.conversation) return unwrapped.conversation;
+  if (unwrapped.extendedTextMessage?.text) return unwrapped.extendedTextMessage.text;
+  if (unwrapped.imageMessage) return `🖼️ [Image] ${unwrapped.imageMessage.caption || ''}`.trim();
+  if (unwrapped.videoMessage) return `🎥 [Video] ${unwrapped.videoMessage.caption || ''}`.trim();
+  if (unwrapped.audioMessage) return '🎵 [Audio]';
+  if (unwrapped.documentMessage) return `📄 [Document] ${unwrapped.documentMessage.caption || unwrapped.documentMessage.fileName || ''}`.trim();
+  if (unwrapped.stickerMessage) return '✨ [Sticker]';
+  if (unwrapped.contactMessage) return `👤 [Contact] ${unwrapped.contactMessage.displayName || ''}`.trim();
+  if (unwrapped.locationMessage) return '📍 [Location]';
+  if (unwrapped.groupInviteMessage) return `👥 [Group Invite] ${unwrapped.groupInviteMessage.groupName || ''}`.trim();
   return '[Unsupported Message Type]';
+}
+
+function appendChannelLinkToText(originalText: string, link: string): string {
+  if (!originalText || !originalText.trim()) {
+    return `📢 *WhatsApp Channel:* ${link}`;
+  }
+  if (originalText.includes(link)) {
+    return originalText;
+  }
+  return `${originalText}\n\n📢 *WhatsApp Channel:* ${link}`;
+}
+
+// Strips raw channel URL stamps from text or captions so the message remains 100% clean and native "View Channel" tag handles the navigation
+function cleanChannelLinkFromText(text: string): string {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/\n*📢\s*\*WhatsApp Channel:\*\s*https?:\/\/[^\s]+/gi, '')
+    .replace(/\n*🔗\s*\*Channel Link:\*\s*https?:\/\/[^\s]+/gi, '')
+    .replace(/📢\s*\*WhatsApp Channel:\*\s*https?:\/\/[^\s]+/gi, '')
+    .replace(/🔗\s*\*Channel Link:\*\s*https?:\/\/[^\s]+/gi, '')
+    .trim();
+}
+
+// Helper to format/transform messages for native forwarding with preserved media, native "View Channel" header tag and HIDDEN caption link
+function prepareForwardedMessage(
+  originalQuotedMessage: any,
+  channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
+  options?: { channelLink?: string; appendChannelLink?: boolean }
+) {
+  if (!originalQuotedMessage) return originalQuotedMessage;
+  
+  // Clean deep copy to avoid mutating the database stored object
+  let quotedMessage = JSON.parse(JSON.stringify(originalQuotedMessage));
+  quotedMessage = unwrapQuotedMessage(quotedMessage);
+
+  const hasValidNumericJid = !!(channelInfo && channelInfo.newsletterJid && isNumericNewsletterJid(channelInfo.newsletterJid));
+  const newsletterContext = hasValidNumericJid ? {
+    forwardedNewsletterMessageInfo: {
+      newsletterJid: channelInfo!.newsletterJid.trim(),
+      newsletterName: channelInfo!.newsletterName || 'WhatsApp Channel',
+      serverMessageId: Number(channelInfo!.serverMessageId) || 1
+    }
+  } : {};
+
+  const forwardingContext = {
+    isForwarded: true,
+    forwardingScore: 1,
+    ...newsletterContext
+  };
+
+  const effectiveLink = options?.channelLink || channelInfo?.inviteLink || channelInfo?.channelLink;
+  // Link is kept HIDDEN from captions/text by default (so only the native WhatsApp "View Channel" pill appears)
+  const shouldAppendLink = options?.appendChannelLink === true && !!effectiveLink;
+
+  if (typeof quotedMessage === 'string') {
+    const textContent = shouldAppendLink 
+      ? appendChannelLinkToText(quotedMessage, effectiveLink!) 
+      : cleanChannelLinkFromText(quotedMessage);
+    return {
+      extendedTextMessage: {
+        text: textContent,
+        contextInfo: forwardingContext
+      }
+    };
+  }
+  
+  // Case 1: Simple plain text conversation -> promote to extendedTextMessage with contextInfo
+  if (quotedMessage.conversation) {
+    const textContent = shouldAppendLink 
+      ? appendChannelLinkToText(quotedMessage.conversation, effectiveLink!) 
+      : cleanChannelLinkFromText(quotedMessage.conversation);
+    return {
+      extendedTextMessage: {
+        text: textContent,
+        contextInfo: forwardingContext
+      }
+    };
+  }
+  
+  // Case 2: Standard structured messages supporting contextInfo
+  const messageKeys = [
+    'videoMessage',
+    'imageMessage',
+    'audioMessage',
+    'documentMessage',
+    'stickerMessage',
+    'extendedTextMessage',
+    'contactMessage',
+    'contactsArrayMessage',
+    'locationMessage',
+    'liveLocationMessage',
+    'groupInviteMessage',
+    'templateMessage',
+    'buttonsMessage',
+    'listMessage',
+    'documentWithCaptionMessage',
+    'imageMessageWithCaption',
+    'videoMessageWithCaption'
+  ];
+  
+  for (const key of messageKeys) {
+    if (quotedMessage[key]) {
+      const inner = quotedMessage[key];
+      if (inner && typeof inner === 'object') {
+        const existingNewsletter = inner.contextInfo?.forwardedNewsletterMessageInfo;
+        inner.contextInfo = {
+          ...(inner.contextInfo || {}),
+          ...forwardingContext,
+          ...(newsletterContext.forwardedNewsletterMessageInfo ? newsletterContext :
+              (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
+        };
+
+        if (shouldAppendLink) {
+          if (key === 'extendedTextMessage' && inner.text) {
+            inner.text = appendChannelLinkToText(inner.text, effectiveLink!);
+          } else if (['imageMessage', 'videoMessage', 'documentMessage', 'documentWithCaptionMessage', 'imageMessageWithCaption', 'videoMessageWithCaption'].includes(key)) {
+            if (inner.caption) {
+              inner.caption = appendChannelLinkToText(inner.caption, effectiveLink!);
+            } else {
+              inner.caption = `📢 *WhatsApp Channel:* ${effectiveLink!}`;
+            }
+          }
+        } else {
+          // Keep link hidden from captions & message text
+          if (key === 'extendedTextMessage' && inner.text) {
+            inner.text = cleanChannelLinkFromText(inner.text);
+          } else if (inner.caption) {
+            inner.caption = cleanChannelLinkFromText(inner.caption);
+          }
+        }
+      }
+      return quotedMessage;
+    }
+  }
+  
+  // Fallback: If we couldn't match a known message key, try to scan keys ending with "Message"
+  const anyMessageKey = Object.keys(quotedMessage).find(k => k.endsWith('Message'));
+  if (anyMessageKey) {
+    const inner = quotedMessage[anyMessageKey];
+    if (inner && typeof inner === 'object') {
+      const existingNewsletter = inner.contextInfo?.forwardedNewsletterMessageInfo;
+      inner.contextInfo = {
+        ...(inner.contextInfo || {}),
+        ...forwardingContext,
+        ...(newsletterContext.forwardedNewsletterMessageInfo ? newsletterContext :
+            (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
+      };
+
+      if (shouldAppendLink && inner.caption) {
+        inner.caption = appendChannelLinkToText(inner.caption, effectiveLink!);
+      } else if (!shouldAppendLink && inner.caption) {
+        inner.caption = cleanChannelLinkFromText(inner.caption);
+      }
+    }
+    return quotedMessage;
+  }
+
+  
+  return quotedMessage;
+}
+
+// Dispatches message payload directly preserving Protobuf contextInfo (forwardedNewsletterMessageInfo) and media metadata
+async function forwardMessagePayloadWithChannel(
+  sock: any,
+  targetJid: string,
+  preparedPayload: any
+): Promise<void> {
+  // Method 1: generateWAMessageFromContent + relayMessage
+  // This preserves contextInfo.forwardedNewsletterMessageInfo and all media attributes directly in Protobuf without Baileys strip-forward mutation
+  try {
+    const fullMsg = generateWAMessageFromContent(targetJid, preparedPayload, {
+      userJid: sock.user?.id
+    });
+    await sock.relayMessage(targetJid, fullMsg.message, { messageId: fullMsg.key.id });
+    return;
+  } catch (relayErr: any) {
+    console.warn(`[FORWARD RELAY] Relay message failed for ${targetJid}: ${relayErr?.message}. Falling back to sendMessage direct payload...`);
+  }
+
+  // Method 2: Fallback to sock.sendMessage directly with preparedPayload
+  await sock.sendMessage(targetJid, preparedPayload);
 }
 
 // Lead Management System
@@ -2453,6 +3568,29 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
 
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
 const connectingLocks = new Map<string, number>();
+const sessionReconnectFailures = new Map<string, number>();
+
+let cachedWaVersion: [number, number, number] | null = null;
+let lastVersionFetchTime = 0;
+
+async function getWaVersion(): Promise<[number, number, number]> {
+  const now = Date.now();
+  if (cachedWaVersion && now - lastVersionFetchTime < 4 * 60 * 60 * 1000) {
+    return cachedWaVersion;
+  }
+  try {
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    if (Array.isArray(version) && version.length === 3) {
+      cachedWaVersion = version as [number, number, number];
+      lastVersionFetchTime = now;
+      console.log(`[WA-VERSION] Using WhatsApp Web protocol version: ${cachedWaVersion.join('.')} (isLatest: ${isLatest})`);
+      return cachedWaVersion;
+    }
+  } catch (err: any) {
+    console.warn(`[WA-VERSION] Dynamic WhatsApp version fetch error: ${err?.message}. Using verified fallback.`);
+  }
+  return cachedWaVersion || [2, 3000, 1050308434];
+}
 
 function scheduleSessionReconnect(username: string, id: string, name?: string, delayMs = 3000) {
   const userSessKey = `${username}:${id}`;
@@ -2534,7 +3672,10 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
     addLog(username, `[SESSION: ${id}] Starting WhatsApp connection...`, 'info');
 
+    const waVersion = await getWaVersion();
+
     const sockInstance = makeWASocket({
+      version: waVersion,
       auth: state,
       printQRInTerminal: false,
       logger: pino({ level: 'silent' }),
@@ -2565,7 +3706,8 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
       if (qr) {
         try {
-          session.qrBase64 = await QRCode.toDataURL(qr);
+          session.qrBase64 = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
+          session.status = 'connecting';
           addLog(username, `[SESSION: ${id}] New WhatsApp Web QR Code generated.`, 'info');
         } catch (err: any) {
           addLog(username, `[SESSION: ${id}] Failed to generate QR Code Base64: ${err.message}`, 'error');
@@ -2581,48 +3723,82 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         const errMessage = lastDisconnect?.error?.message || 'Connection closed';
         session.lastError = errMessage;
 
-        // Only delete saved credentials if we got an explicit, permanent logout from WhatsApp
+        if (statusCode === 405 || errMessage.toLowerCase().includes('connection failure')) {
+          cachedWaVersion = null;
+        }
+
+        // Determine if credentials were permanently invalidated or revoked by WhatsApp:
+        // - DisconnectReason.loggedOut (401)
+        // - HTTP 401 Unauthorized / 403 Forbidden / Bad session
+        // - "Logged out", "Unauthorized", "Stream Errored", or device unlinked
         const isExplicitLogout = 
           statusCode === DisconnectReason.loggedOut || 
-          errMessage.toLowerCase().includes('logged out');
+          statusCode === 401 ||
+          statusCode === 403 ||
+          statusCode === DisconnectReason.badSession ||
+          errMessage.toLowerCase().includes('logged out') ||
+          errMessage.toLowerCase().includes('bad session') ||
+          errMessage.toLowerCase().includes('unauthorized');
 
         if (isExplicitLogout) {
           session.status = 'disconnected';
           session.user = null;
-          addLog(username, `[SESSION: ${id}] WhatsApp session explicitly logged out. Clearing credentials...`, 'info');
+          sessionReconnectFailures.delete(userSessKey);
+          addLog(username, `[SESSION: ${id}] WhatsApp credentials expired or unlinked (Status: ${statusCode || 'Logged Out'}). Purging stale credentials so a fresh QR code can be generated...`, 'info');
           try {
             if (fs.existsSync(authFolder)) {
               fs.rmSync(authFolder, { recursive: true, force: true });
             }
           } catch (e: any) {}
+          // Immediately schedule clean fresh reconnect which will enter pairing mode and generate a fresh QR!
           scheduleSessionReconnect(username, id, name, 1500);
         } else {
           const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || errMessage.toLowerCase().includes('conflict');
           if (isConflict) {
             session.status = 'disconnected';
-            addLog(username, `[SESSION: ${id}] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" in UI when ready.`, 'info');
-            session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect to resume.';
+            sessionReconnectFailures.delete(userSessKey);
+            addLog(username, `[SESSION: ${id}] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" or "Generate Fresh QR" in UI when ready.`, 'info');
+            session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect or Generate Fresh QR to resume.';
           } else {
             const hasSavedCreds = fs.existsSync(credsFile);
-            if (hasSavedCreds || session.user) {
+            const failCount = (sessionReconnectFailures.get(userSessKey) || 0) + 1;
+            sessionReconnectFailures.set(userSessKey, failCount);
+
+            if (hasSavedCreds && failCount >= 3) {
+              // Stored credentials have failed multiple consecutive restore attempts!
+              // This is why WhatsApp sessions get stuck without producing new QR codes.
+              session.status = 'disconnected';
+              session.user = null;
+              sessionReconnectFailures.delete(userSessKey);
+              addLog(username, `[SESSION: ${id}] Saved credentials failed to restore after ${failCount} attempts (Code ${statusCode || 'Stream'}). Purging stale credentials to generate a brand new QR code...`, 'info');
+              try {
+                if (fs.existsSync(authFolder)) {
+                  fs.rmSync(authFolder, { recursive: true, force: true });
+                }
+              } catch (e: any) {}
+              scheduleSessionReconnect(username, id, name, 1000);
+            } else if (hasSavedCreds || session.user) {
               // Smooth stream restart (e.g. Code 515 / 503 / 428 after QR scan or network reset)
               session.status = 'connecting';
-              addLog(username, `[SESSION: ${id}] Connection stream reset (Code ${statusCode || 'Stream'}). Reconnecting automatically using saved credentials...`, 'info');
-              scheduleSessionReconnect(username, id, name, 500);
+              addLog(username, `[SESSION: ${id}] Connection stream reset (Code ${statusCode || 'Stream'}). Reconnecting automatically using saved credentials (attempt ${failCount}/3)...`, 'info');
+              scheduleSessionReconnect(username, id, name, 600);
             } else {
               session.status = 'disconnected';
               session.user = null;
+              sessionReconnectFailures.delete(userSessKey);
               const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
               if (isQrTimeout) {
-                addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing...`, 'info');
+                addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing dynamic QR code...`, 'info');
               } else {
-                addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}").`, 'info');
+                addLog(username, `[SESSION: ${id}] Connection closed/paused (Reason code: ${statusCode || 'Unknown'}, message: "${errMessage}"). Generating fresh connection...`, 'info');
               }
-              scheduleSessionReconnect(username, id, name, 1500);
+              const reconnectDelay = statusCode === 405 ? 3000 : 1200;
+              scheduleSessionReconnect(username, id, name, reconnectDelay);
             }
           }
         }
       } else if (connection === 'open') {
+        sessionReconnectFailures.delete(userSessKey);
         session.status = 'connected';
         session.qrBase64 = null;
         session.activePairingCode = null;
@@ -2665,6 +3841,72 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         for (const msg of m.messages) {
           const from = msg.key.remoteJid;
           const isMe = msg.key.fromMe;
+
+          // 1. Comprehensive WhatsApp Group link & native invite scanner (runs on ALL incoming & outgoing messages, groups & DMs, text & media captions & ephemeral messages)
+          if (from && from !== 'status@broadcast') {
+            try {
+              const isGroup = from.endsWith('@g.us');
+              const participantJid = isMe 
+                ? (sockInstance.user?.id || 'me')
+                : (msg.key.participant || msg.participant || from);
+              const senderJidFormatted = isGroup ? `${participantJid}` : from;
+              const senderDisplayName = isMe 
+                ? 'Me (Sent)' 
+                : (msg.pushName || (isGroup ? `Member (${participantJid.split('@')[0]})` : `Contact (${from.split('@')[0]})`));
+
+              const { scanText, nativeInvites } = extractComprehensiveMessageContent(msg);
+
+              // Process native WhatsApp Group Invite Cards
+              for (const nativeInv of nativeInvites) {
+                const fullUrl = `https://chat.whatsapp.com/${nativeInv.code}`;
+                addLog(username, `🔍 Captured native WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
+                handleGroupInviteUrl(
+                  username,
+                  fullUrl,
+                  nativeInv.code,
+                  senderJidFormatted,
+                  senderDisplayName,
+                  nativeInv.caption || nativeInv.groupName || fullUrl,
+                  id,
+                  sockInstance,
+                  {
+                    chatJid: from,
+                    chatName: isGroup ? 'WhatsApp Group' : 'Direct Message',
+                    isOutgoing: isMe,
+                    nativeName: nativeInv.groupName,
+                    nativeDesc: nativeInv.caption,
+                    nativeGroupJid: nativeInv.groupJid
+                  }
+                ).catch(e => console.error('Error handling native group invite:', e));
+              }
+
+              // Process text and media caption links
+              if (scanText) {
+                const groupCodes = extractGroupInviteCodes(scanText);
+                for (const code of groupCodes) {
+                  const fullUrl = `https://chat.whatsapp.com/${code}`;
+                  addLog(username, `🔍 Captured WhatsApp Group link in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
+                  handleGroupInviteUrl(
+                    username,
+                    fullUrl,
+                    code,
+                    senderJidFormatted,
+                    senderDisplayName,
+                    scanText.substring(0, 200),
+                    id,
+                    sockInstance,
+                    {
+                      chatJid: from,
+                      chatName: isGroup ? 'WhatsApp Group' : 'Direct Message',
+                      isOutgoing: isMe
+                    }
+                  ).catch(e => console.error('Error handling group link url:', e));
+                }
+              }
+            } catch (scanErr: any) {
+              console.error('Group link scanner error:', scanErr);
+            }
+          }
 
           // Check raw message text
           const rawText = (msg.message?.conversation || 
@@ -2717,14 +3959,11 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             }
           }
           
-          const contextInfo = msg.message?.extendedTextMessage?.contextInfo ||
-                              msg.message?.imageMessage?.contextInfo ||
-                              msg.message?.videoMessage?.contextInfo ||
-                              msg.message?.documentMessage?.contextInfo ||
-                              msg.message?.stickerMessage?.contextInfo;
+          const contextInfo = extractMsgContextInfo(msg.message);
           
-          const quotedMessage = contextInfo?.quotedMessage;
-          const isShareReply = rawText.toLowerCase() === '.share' && !!quotedMessage;
+          const rawQuotedMessage = contextInfo?.quotedMessage;
+          const quotedMessage = unwrapQuotedMessage(rawQuotedMessage);
+          const isShareReply = (lowerRawText === '.share' || lowerRawText.startsWith('.share ')) && !!quotedMessage;
           const isShareNowReply = (lowerRawText === '.sharenow' || lowerRawText.startsWith('.sharenow ')) && !!quotedMessage;
 
           // Handle .sharenow command (Immediately broadcasts quoted message to all joined groups except blocked ones)
@@ -2734,8 +3973,46 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               const batchSize = settings.shareBatchSize || 5;
               const pauseSec = settings.shareBatchPauseSeconds || 10;
 
-              addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Querying joined groups...`, 'info');
-              await sockInstance.sendMessage(from, { text: `🚀 *.sharenow Command Triggered!*\nFetching all joined WhatsApp groups for session...` }, { quoted: msg });
+              // Extract channel info if message originates or forwards from a channel, or apply user default channel tag
+              const preDetected = extractNewsletterInfo(contextInfo, rawQuotedMessage, from);
+              const sharenowArg = rawText.replace(/^\.sharenow\s*/i, '').trim();
+
+              const resolvedChannel = await resolveWhatsAppChannel(
+                sockInstance,
+                username,
+                sharenowArg,
+                preDetected
+              );
+
+              // Determine direct clickable channel link:
+              // 1) From argument/link in command
+              // 2) From resolvedChannel?.inviteLink
+              // 3) From settings.defaultChannelInviteLink
+              const effectiveChannelLink = resolvedChannel?.inviteLink || 
+                (extractChannelInviteCode(sharenowArg) ? `https://whatsapp.com/channel/${extractChannelInviteCode(sharenowArg)}` : undefined) ||
+                settings.defaultChannelInviteLink;
+
+              if (resolvedChannel) {
+                if (resolvedChannel.isVerified) {
+                  addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Preserving Verified Channel Tag: "${resolvedChannel.newsletterName}" (${resolvedChannel.newsletterJid})${effectiveChannelLink ? ` | Link: ${effectiveChannelLink}` : ''}`, 'info');
+                } else {
+                  addLog(username, `⚠️ [.SHARENOW] Triggered with custom channel "${resolvedChannel.newsletterName}". ${resolvedChannel.warning || ''}`, 'info');
+                }
+              } else {
+                addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Querying joined groups...${effectiveChannelLink ? ` [Using Default Channel Link: ${effectiveChannelLink}]` : ''}`, 'info');
+              }
+
+              const channelPillText = resolvedChannel
+                ? (resolvedChannel.isVerified
+                    ? `\n📢 *Preserving Channel Tag:* ${resolvedChannel.newsletterName} (Verified: ${resolvedChannel.newsletterJid})`
+                    : `\n⚠️ *Custom Channel:* ${resolvedChannel.newsletterName}\n_(Tip: Provide the channel link e.g. .sharenow https://whatsapp.com/channel/... to make it clickable on WhatsApp)_`)
+                : '';
+
+              const linkPillText = effectiveChannelLink ? `\n🔗 *Channel Link:* ${effectiveChannelLink}` : '';
+
+              await sockInstance.sendMessage(from, { 
+                text: `🚀 *.sharenow Command Triggered!*\nFetching all joined WhatsApp groups for session...${channelPillText}${linkPillText}` 
+              }, { quoted: msg });
 
               // Fetch all participating groups from WhatsApp socket
               let groupsDict: any = {};
@@ -2765,21 +4042,17 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
               await sockInstance.sendMessage(from, { 
                 text: `📢 *.sharenow Starting Group Broadcast!*\n\n` +
+                      (resolvedChannel && resolvedChannel.isVerified ? `🏷️ *Verified Channel Tag:* ${resolvedChannel.newsletterName} (${resolvedChannel.newsletterJid})\n` : (resolvedChannel ? `🏷️ *Channel:* ${resolvedChannel.newsletterName}\n` : '')) +
+                      (settings.appendChannelLinkToShare && effectiveChannelLink ? `🔗 *Clickable Channel Link:* ${effectiveChannelLink}\n` : (effectiveChannelLink ? `🏷️ *View Channel Tag:* Active on message header (link hidden from caption)\n` : '')) +
                       `🎯 *Target Groups:* ${eligibleGroups.length} (Skipped ${bannedCount} banned groups)\n` +
                       `📦 *Batch Config:* ${batchSize} groups/batch with ${pauseSec}s pause\n\n` +
-                      `Sending messages now...` 
+                      `Sending messages with all media, formatting & native View Channel tag now...` 
               }, { quoted: msg });
 
-              const quotedSender = contextInfo.participant || contextInfo.remoteJid || '';
-              const originalMessage = {
-                key: {
-                  remoteJid: from,
-                  id: contextInfo.stanzaId || '',
-                  fromMe: quotedSender === sockInstance.user?.id || (sockInstance.user?.id && quotedSender.split('@')[0] === sockInstance.user?.id.split(':')[0]),
-                  participant: quotedSender
-                },
-                message: quotedMessage
-              };
+              const preparedMsgPayload = prepareForwardedMessage(quotedMessage, resolvedChannel, {
+                channelLink: effectiveChannelLink,
+                appendChannelLink: !!settings.appendChannelLinkToShare
+              });
 
               let successCount = 0;
               let failCount = 0;
@@ -2791,10 +4064,13 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 for (const targetGroup of batch) {
                   const targetJid = targetGroup.id || targetGroup.jid;
                   try {
-                    await simulateHumanTyping(sockInstance, targetJid, 'Broadcasting updates...');
-                    await sockInstance.sendMessage(targetJid, { forward: originalMessage });
+                    await simulateHumanTyping(sockInstance, targetJid, getMessagePreview(quotedMessage));
+                    
+                    // Dispatch using forwardMessagePayloadWithChannel (preserves channel tag, media & formatting)
+                    await forwardMessagePayloadWithChannel(sockInstance, targetJid, preparedMsgPayload);
+
                     successCount++;
-                    addLog(username, `✅ [.SHARENOW] Forwarded message to ${targetGroup.subject || targetJid}`, 'success');
+                    addLog(username, `✅ [.SHARENOW] Forwarded message to ${targetGroup.subject || targetJid}${resolvedChannel ? ` [Channel Tag: ${resolvedChannel.newsletterName}]` : ''}${effectiveChannelLink ? ` [Link: ${effectiveChannelLink}]` : ''}`, 'success');
                   } catch (err: any) {
                     failCount++;
                     console.error(`[.SHARENOW] Error forwarding to ${targetJid}:`, err);
@@ -2815,7 +4091,9 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 text: `🎉 *.sharenow Broadcast Complete!* ✅\n\n` +
                       `✅ *Successfully Sent:* ${successCount} groups\n` +
                       `❌ *Failed:* ${failCount}\n` +
-                      `🚫 *Banned Groups Skipped:* ${bannedCount}` 
+                      `🚫 *Banned Groups Skipped:* ${bannedCount}` +
+                      (resolvedChannel ? `\n📢 *Channel Tag Appended:* ${resolvedChannel.newsletterName}${resolvedChannel.isVerified ? ' (Verified)' : ''}` : '') +
+                      (effectiveChannelLink ? `\n🔗 *Channel Link Included:* ${effectiveChannelLink}` : '')
               }, { quoted: msg });
 
             } catch (err: any) {
@@ -2829,9 +4107,25 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           if (isShareReply && from) {
             try {
               const shares = loadUserShares(username);
+              const settings = loadUserSettings(username);
               const quotedSender = contextInfo.participant || contextInfo.remoteJid || '';
               const quotedMessageId = contextInfo.stanzaId || '';
               
+              // Extract channel info if message originates or forwards from a channel, or apply user default channel tag
+              const preDetected = extractNewsletterInfo(contextInfo, rawQuotedMessage, from);
+              const shareArg = rawText.replace(/^\.share\s*/i, '').trim();
+
+              const resolvedChannel = await resolveWhatsAppChannel(
+                sockInstance,
+                username,
+                shareArg,
+                preDetected
+              );
+
+              const effectiveChannelLink = resolvedChannel?.inviteLink || 
+                (extractChannelInviteCode(shareArg) ? `https://whatsapp.com/channel/${extractChannelInviteCode(shareArg)}` : undefined) ||
+                settings.defaultChannelInviteLink;
+
               const newShare: CapturedShare = {
                 id: `share_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
                 timestamp: new Date().toISOString(),
@@ -2841,6 +4135,21 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 quotedMessageId: quotedMessageId,
                 quotedMessage: quotedMessage,
                 displayText: getMessagePreview(quotedMessage),
+                mediaType: detectMediaType(quotedMessage),
+                caption: extractCaptionOrText(quotedMessage),
+                channelInfo: resolvedChannel ? {
+                  newsletterJid: resolvedChannel.newsletterJid,
+                  newsletterName: resolvedChannel.newsletterName,
+                  serverMessageId: resolvedChannel.serverMessageId || 1,
+                  channelLink: effectiveChannelLink
+                } : (settings.defaultChannelJid && settings.autoAttachChannelTag ? {
+                  newsletterJid: settings.defaultChannelJid,
+                  newsletterName: settings.defaultChannelName || 'WhatsApp Channel',
+                  serverMessageId: 1,
+                  channelLink: effectiveChannelLink
+                } : undefined),
+                channelLink: effectiveChannelLink,
+                appendChannelLink: false,
                 status: 'pending',
                 forwardedTo: []
               };
@@ -2848,11 +4157,37 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               shares.push(newShare);
               saveUserShares(username, shares);
               
-              addLog(username, `📥 [SHARE] Captured shared message from ${from}. Preview: "${newShare.displayText}"`, 'success');
+              addLog(username, `📥 [SHARE] Captured shared message from ${from}. Type: ${newShare.mediaType}${resolvedChannel ? ` | Channel Tag: "${resolvedChannel.newsletterName}"${resolvedChannel.isVerified ? ' (Verified)' : ' (Unverified)'}` : ''}${effectiveChannelLink ? ` | Channel Link: ${effectiveChannelLink}` : ''}. Preview: "${newShare.displayText}"`, 'success');
               
               // Send confirmation reply back
+              let confirmTxt = '';
+              if (resolvedChannel) {
+                if (resolvedChannel.isVerified) {
+                  confirmTxt = `✅ *Captured WhatsApp Channel Message!*\n\n` +
+                    `📢 *Channel Tag:* ${resolvedChannel.newsletterName}\n` +
+                    `🆔 *Channel ID:* ${resolvedChannel.newsletterJid}\n` +
+                    (effectiveChannelLink ? `🔗 *Channel Link:* ${effectiveChannelLink}\n` : '') +
+                    `📦 *Media Type:* ${newShare.mediaType?.toUpperCase() || 'MESSAGE'}\n` +
+                    `📝 *Preview:* "${newShare.displayText}"\n\n` +
+                    `✨ Verified Channel Tag attached! Tapping the tag or link on WhatsApp will open your official channel. You can forward it anytime via Dashboard or reply *.sharenow* to broadcast.`;
+                } else {
+                  confirmTxt = `✅ *Captured Shared Message!*\n\n` +
+                    `🏷️ *Custom Channel Name:* "${resolvedChannel.newsletterName}"\n` +
+                    (effectiveChannelLink ? `🔗 *Channel Link:* ${effectiveChannelLink}\n` : '') +
+                    `⚠️ *Note:* Channel is not yet linked to a verified WhatsApp JID. To make the tag clickable on WhatsApp, provide the channel link (e.g. .share ${resolvedChannel.newsletterName} | https://whatsapp.com/channel/...) or select it in Dashboard Settings.\n\n` +
+                    `📦 *Media Type:* ${newShare.mediaType?.toUpperCase() || 'MESSAGE'}\n` +
+                    `📝 *Preview:* "${newShare.displayText}"`;
+                }
+              } else {
+                confirmTxt = `✅ *Captured Shared Message!*\n\n` +
+                  (effectiveChannelLink ? `🔗 *Default Channel Link:* ${effectiveChannelLink}\n` : '') +
+                  `📦 *Media Type:* ${newShare.mediaType?.toUpperCase() || 'MESSAGE'}\n` +
+                  `📝 *Preview:* "${newShare.displayText}"\n\n` +
+                  `Available in your dashboard panel to forward to any group (with optional channel tags & link).`;
+              }
+
               await simulateHumanTyping(sockInstance, from, newShare.displayText);
-              await sockInstance.sendMessage(from, { text: `✅ *Captured shared message!*\n\n"${newShare.displayText}"\n\nIt is now available in your dashboard panel to forward to any group.` }, { quoted: msg });
+              await sockInstance.sendMessage(from, { text: confirmTxt }, { quoted: msg });
             } catch (err: any) {
               console.error('[SHARE] Error capturing shared message:', err);
               addLog(username, `❌ Error capturing .share reply: ${err.message}`, 'error');
@@ -2864,100 +4199,6 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             continue;
           }
 
-          // 1. Comprehensive WhatsApp Group link & native invite card scanner (saves to group.json)
-          // Always runs on ALL incoming messages (groups, DMs, text, media captions, native invite cards)
-          try {
-            const participantJid = msg.key.participant || msg.participant || from;
-            const isGroup = from.endsWith('@g.us');
-            const senderJidFormatted = isGroup ? `${participantJid}` : from;
-            const senderDisplayName = msg.pushName || (isGroup ? `Member (${participantJid.split('@')[0]})` : `Contact (${from.split('@')[0]})`);
-
-            let scanText = '';
-            if (msg.message) {
-              scanText += (msg.message.conversation || '') + ' ';
-              scanText += (msg.message.extendedTextMessage?.text || '') + ' ';
-              scanText += (msg.message.imageMessage?.caption || '') + ' ';
-              scanText += (msg.message.videoMessage?.caption || '') + ' ';
-              scanText += (msg.message.documentMessage?.caption || '') + ' ';
-              scanText += (msg.message.documentWithCaptionMessage?.message?.documentMessage?.caption || '') + ' ';
-              scanText += (msg.message.buttonsResponseMessage?.selectedDisplayText || msg.message.buttonsResponseMessage?.selectedButtonId || '') + ' ';
-              scanText += (msg.message.listResponseMessage?.title || msg.message.listResponseMessage?.singleSelectReply?.selectedRowId || '') + ' ';
-
-              // Extract contextInfo quoted message across all message types
-              const anyContextInfo = msg.message.extendedTextMessage?.contextInfo ||
-                                     msg.message.imageMessage?.contextInfo ||
-                                     msg.message.videoMessage?.contextInfo ||
-                                     msg.message.documentMessage?.contextInfo ||
-                                     msg.message.stickerMessage?.contextInfo ||
-                                     msg.message.audioMessage?.contextInfo;
-
-              const qMsg = anyContextInfo?.quotedMessage;
-              if (qMsg) {
-                scanText += (qMsg.conversation || '') + ' ';
-                scanText += (qMsg.extendedTextMessage?.text || '') + ' ';
-                scanText += (qMsg.imageMessage?.caption || '') + ' ';
-                scanText += (qMsg.videoMessage?.caption || '') + ' ';
-                scanText += (qMsg.documentMessage?.caption || '') + ' ';
-
-                if (qMsg.groupInviteMessage?.inviteCode) {
-                  const gInv = qMsg.groupInviteMessage;
-                  const fullUrl = `https://chat.whatsapp.com/${gInv.inviteCode}`;
-                  addLog(username, `🔍 Captured quoted WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
-                  handleGroupInviteUrl(
-                    username,
-                    fullUrl,
-                    gInv.inviteCode,
-                    senderJidFormatted,
-                    senderDisplayName,
-                    gInv.caption || gInv.groupName || fullUrl,
-                    id,
-                    sockInstance
-                  );
-                }
-              }
-
-              // Check native WhatsApp group invite message object
-              if (msg.message.groupInviteMessage?.inviteCode) {
-                const gInv = msg.message.groupInviteMessage;
-                const fullUrl = `https://chat.whatsapp.com/${gInv.inviteCode}`;
-                addLog(username, `🔍 Captured native WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
-                handleGroupInviteUrl(
-                  username,
-                  fullUrl,
-                  gInv.inviteCode,
-                  senderJidFormatted,
-                  senderDisplayName,
-                  gInv.caption || gInv.groupName || fullUrl,
-                  id,
-                  sockInstance
-                );
-              }
-            }
-
-            if (scanText.trim()) {
-              const groupLinkRegex = /(https?:\/\/)?(www\.)?chat\.whatsapp\.com\/(invite\/)?([A-Za-z0-9_-]{18,32})/gi;
-              let match;
-              while ((match = groupLinkRegex.exec(scanText)) !== null) {
-                const fullUrl = match[0].startsWith('http') ? match[0] : `https://${match[0]}`;
-                const code = match[4] || match[3];
-                if (code) {
-                  addLog(username, `🔍 Captured WhatsApp Group link in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}. Resolving & saving...`, 'info');
-                  handleGroupInviteUrl(
-                    username, 
-                    fullUrl, 
-                    code, 
-                    senderJidFormatted, 
-                    senderDisplayName, 
-                    scanText.trim().substring(0, 150), 
-                    id, 
-                    sockInstance
-                  );
-                }
-              }
-            }
-          } catch (scanErr: any) {
-            console.error('Group link scanner error:', scanErr);
-          }
 
           // "doesn't process media recieve don't download media we will send media not process recieved"
           const hasMedia = !!(
@@ -3303,47 +4544,37 @@ async function processImageToJpegThumbnail(rawInput: Buffer | string, pageUrl?: 
 
     if (!rawBuf || rawBuf.length === 0) return undefined;
 
-    const pipeline = sharp(rawBuf);
-    const meta = await pipeline.metadata();
-    if (!meta.width || !meta.height) return undefined;
+    const img = await Jimp.read(rawBuf);
+    const origW = img.bitmap.width;
+    const origH = img.bitmap.height;
+    if (!origW || !origH) return undefined;
 
-    const origW = meta.width;
-    const origH = meta.height;
     const aspect = origW / origH;
 
     // WhatsApp Large Hero Card display requirements:
     // 1. Width: 720px (large physical dimensions)
     // 2. Aspect Ratio: 16:9 (720x405) to trigger full-width hero banner layout
     // 3. Compression: Low JPEG quality (~45-50) so payload byte size remains tiny (~14-20KB)
-    let resizer: any;
     if (aspect < 1.25) {
       // Force 16:9 aspect ratio crop (720x405) for square/portrait images to guarantee large card display
-      resizer = sharp(rawBuf).resize(720, 405, { fit: 'cover' });
+      img.cover({ w: 720, h: 405 });
     } else {
       // Natural landscape image: resize to 720px width preserving aspect ratio (e.g. 720x405)
-      resizer = sharp(rawBuf).resize({
-        width: 720,
-        fit: 'inside',
-        withoutEnlargement: true
-      });
-    }
-
-    if (meta.hasAlpha) {
-      resizer = resizer.flatten({ background: '#ffffff' });
+      img.scaleToFit({ w: 720, h: 405 });
     }
 
     let quality = 50;
-    let jpegBuf = await resizer.jpeg({ quality, mozjpeg: true }).toBuffer();
+    let jpegBuf = await img.getBuffer('image/jpeg', { quality });
 
     // Keep payload strictly under 28KB for WhatsApp protobuf safety
     while (jpegBuf.length > 28000 && quality > 15) {
       quality -= 5;
-      jpegBuf = await resizer.jpeg({ quality, mozjpeg: true }).toBuffer();
+      jpegBuf = await img.getBuffer('image/jpeg', { quality });
     }
 
     return jpegBuf;
   } catch (err: any) {
-    console.warn('[LINK-PREVIEW] Sharp processing warning:', err?.message || err);
+    console.warn('[LINK-PREVIEW] Image thumbnail processing warning:', err?.message || err);
     return undefined;
   }
 }
@@ -3775,10 +5006,13 @@ setInterval(checkAndProcessAllUserQueues, 10000);
 
 function requireAuth(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    return res.status(401).json({ success: false, error: 'Unauthorized: Missing authorization header.' });
+  const token = authHeader 
+    ? authHeader.replace(/^Bearer\s+/, '') 
+    : ((req.query?.token as string) || (req.body?.token as string));
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Unauthorized: Missing authorization header or token.' });
   }
-  const token = authHeader.replace(/^Bearer\s+/, '');
   let username = userTokens.get(token);
 
   if (!username) {
@@ -4058,8 +5292,22 @@ function getFirestoreStatusPayload() {
     res.json({ success: true, settings: loadUserSettings(req.username) });
   });
 
-  app.post('/api/settings', requireAuth, (req: any, res) => {
-    const { secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds } = req.body;
+  app.post('/api/settings', requireAuth, async (req: any, res) => {
+    const { 
+      secretPrefix, 
+      disableTextProcessing, 
+      shareBatchSize, 
+      shareBatchPauseSeconds,
+      defaultChannelJid,
+      defaultChannelName,
+      defaultChannelInviteLink,
+      autoAttachChannelTag,
+      appendChannelLinkToShare,
+      autoJoinGroupsEnabled,
+      autoJoinMinMembers,
+      autoRetryIntervalMinutes,
+      autoRequestAdminApproval
+    } = req.body;
     if (secretPrefix !== undefined && typeof secretPrefix !== 'string') {
       return res.status(400).json({ success: false, error: 'secretPrefix must be a string.' });
     }
@@ -4067,11 +5315,58 @@ function getFirestoreStatusPayload() {
     if (!cleanPrefix) {
       return res.status(400).json({ success: false, error: 'secretPrefix cannot be empty.' });
     }
-    const settings = { 
+
+    let activeSock: any = null;
+    const userSessKey = `${req.username}:primary`;
+    if (sessions.has(userSessKey)) {
+      activeSock = sessions.get(userSessKey)?.sock;
+    }
+    if (!activeSock) {
+      for (const [k, v] of sessions.entries()) {
+        if (k.startsWith(`${req.username}:`) && v?.sock) {
+          activeSock = v.sock;
+          break;
+        }
+      }
+    }
+
+    let finalChannelJid = defaultChannelJid !== undefined ? (defaultChannelJid ? String(defaultChannelJid).trim() : undefined) : undefined;
+    let finalChannelName = defaultChannelName !== undefined ? (defaultChannelName ? String(defaultChannelName).trim() : undefined) : undefined;
+    let finalInviteLink = defaultChannelInviteLink !== undefined ? (defaultChannelInviteLink ? String(defaultChannelInviteLink).trim() : undefined) : undefined;
+
+    // If channel info or invite link was supplied, attempt to resolve into authentic numeric WhatsApp channel
+    if (finalChannelJid || finalChannelName || finalInviteLink) {
+      try {
+        const resolved = await resolveWhatsAppChannel(
+          activeSock,
+          req.username,
+          finalInviteLink || finalChannelJid || finalChannelName
+        );
+        if (resolved && isNumericNewsletterJid(resolved.newsletterJid)) {
+          finalChannelJid = resolved.newsletterJid;
+          finalChannelName = finalChannelName || resolved.newsletterName;
+          finalInviteLink = resolved.inviteLink || finalInviteLink;
+          addLog(req.username, `🏷️ Settings: Verified WhatsApp Channel mapped: "${finalChannelName}" (${finalChannelJid})`, 'success');
+        }
+      } catch (err: any) {
+        console.warn('[SETTINGS] Error auto-resolving channel:', err?.message);
+      }
+    }
+
+    const settings: Partial<UserSettings> = { 
       secretPrefix: cleanPrefix,
       disableTextProcessing: !!disableTextProcessing,
       shareBatchSize: typeof shareBatchSize === 'number' && shareBatchSize > 0 ? shareBatchSize : 5,
-      shareBatchPauseSeconds: typeof shareBatchPauseSeconds === 'number' && shareBatchPauseSeconds >= 0 ? shareBatchPauseSeconds : 10
+      shareBatchPauseSeconds: typeof shareBatchPauseSeconds === 'number' && shareBatchPauseSeconds >= 0 ? shareBatchPauseSeconds : 10,
+      defaultChannelJid: finalChannelJid,
+      defaultChannelName: finalChannelName,
+      defaultChannelInviteLink: finalInviteLink,
+      autoAttachChannelTag: autoAttachChannelTag !== undefined ? !!autoAttachChannelTag : undefined,
+      appendChannelLinkToShare: appendChannelLinkToShare !== undefined ? !!appendChannelLinkToShare : undefined,
+      autoJoinGroupsEnabled: autoJoinGroupsEnabled !== undefined ? !!autoJoinGroupsEnabled : undefined,
+      autoJoinMinMembers: typeof autoJoinMinMembers === 'number' && autoJoinMinMembers > 0 ? autoJoinMinMembers : undefined,
+      autoRetryIntervalMinutes: typeof autoRetryIntervalMinutes === 'number' && autoRetryIntervalMinutes > 0 ? autoRetryIntervalMinutes : undefined,
+      autoRequestAdminApproval: autoRequestAdminApproval !== undefined ? !!autoRequestAdminApproval : undefined
     };
     saveUserSettings(req.username, settings);
     res.json({ success: true, settings: loadUserSettings(req.username), message: 'Settings saved successfully!' });
@@ -4323,6 +5618,252 @@ function getFirestoreStatusPayload() {
     res.json({ success: true, invites: loadUserGroupInvites(req.username) });
   });
 
+  app.post('/api/captured-group-invites/add', requireAuth, async (req: any, res) => {
+    const { urlOrCode, sessionId = 'primary' } = req.body;
+    if (!urlOrCode || typeof urlOrCode !== 'string') {
+      return res.status(400).json({ success: false, error: 'WhatsApp Group Invite link or code is required.' });
+    }
+
+    const codes = extractGroupInviteCodes(urlOrCode);
+    const code = codes.length > 0 ? codes[0] : urlOrCode.trim().split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '');
+    if (!code || code.length < 15) {
+      return res.status(400).json({ success: false, error: 'Invalid WhatsApp Group invite link or code.' });
+    }
+
+    const userSessKey = `${req.username}:${sessionId}`;
+    let sockInstance = sessions.get(userSessKey)?.sock;
+    if (!sockInstance) {
+      for (const [k, v] of sessions.entries()) {
+        if (k.startsWith(`${req.username}:`) && v?.sock && v.status === 'connected') {
+          sockInstance = v.sock;
+          break;
+        }
+      }
+    }
+
+    try {
+      const fullUrl = `https://chat.whatsapp.com/${code}`;
+      const result = await handleGroupInviteUrl(
+        req.username,
+        fullUrl,
+        code,
+        sockInstance?.user?.id || 'manual',
+        'User (Manual Add)',
+        'Manually added via Dashboard',
+        sessionId,
+        sockInstance,
+        {
+          chatName: 'Manual Entry',
+          isOutgoing: true
+        }
+      );
+      res.json({ success: true, invite: result, message: `Group link "${result?.groupName || code}" saved successfully!` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/captured-group-invites/join/:code', requireAuth, async (req: any, res) => {
+    const { code } = req.params;
+    const { sessionId = 'primary' } = req.body;
+
+    let sockInstance = sessions.get(`${req.username}:${sessionId}`)?.sock;
+    if (!sockInstance) {
+      for (const [k, v] of sessions.entries()) {
+        if (k.startsWith(`${req.username}:`) && v?.sock && v.status === 'connected') {
+          sockInstance = v.sock;
+          break;
+        }
+      }
+    }
+
+    if (!sockInstance) {
+      return res.status(400).json({ success: false, error: 'No connected WhatsApp session available to join group. Please connect an account first.' });
+    }
+
+    try {
+      const invites = loadUserGroupInvites(req.username);
+      const existing = invites.find(i => i.code === code);
+
+      let groupName = existing?.groupName || 'WhatsApp Group';
+      let groupSize = existing?.groupSize || 0;
+      let joinApprovalMode = existing?.joinApprovalMode || false;
+      let groupJid = existing?.groupJid || '';
+
+      try {
+        const info = await sockInstance.groupGetInviteInfo(code);
+        if (info) {
+          groupName = info.subject || groupName;
+          groupSize = typeof info.size === 'number' ? info.size : (info.participants?.length || groupSize);
+          joinApprovalMode = !!info.joinApprovalMode;
+          groupJid = info.id || groupJid;
+        }
+      } catch (e) {}
+
+      addLog(req.username, `🚀 [JOIN GROUP] Attempting to join "${groupName}" (${code})...`, 'info');
+
+      let resultingStatus: GroupJoinStatus = 'not_joined';
+      let statusDetails = '';
+      let joinedJid = '';
+
+      try {
+        const joinResult = await sockInstance.groupAcceptInvite(code);
+        joinedJid = joinResult || groupJid;
+        
+        if (joinApprovalMode) {
+          resultingStatus = 'requested';
+          statusDetails = 'Membership request submitted. Group has Admin Approval Mode ON.';
+          addLog(req.username, `⏳ [JOIN REQUEST] Group "${groupName}" requires admin approval. Request sent!`, 'info');
+        } else {
+          resultingStatus = 'joined';
+          statusDetails = `Successfully joined "${groupName}" (${groupSize} members).`;
+          addLog(req.username, `🎉 [JOIN SUCCESS] Successfully joined "${groupName}"!`, 'success');
+          if (joinedJid) {
+            saveUserGroupDetails(req.username, joinedJid, groupName, sessionId, {
+              memberCount: groupSize,
+              canUserSend: true
+            });
+          }
+        }
+      } catch (joinErr: any) {
+        const msg = joinErr?.message || String(joinErr);
+        if (joinApprovalMode || msg.toLowerCase().includes('approval') || msg.toLowerCase().includes('request')) {
+          resultingStatus = 'requested';
+          statusDetails = 'Membership request submitted to group admins. Awaiting approval.';
+          addLog(req.username, `⏳ [JOIN REQUEST] Membership request submitted for "${groupName}".`, 'info');
+        } else {
+          throw new Error(`WhatsApp rejected invite: ${msg}`);
+        }
+      }
+
+      const updated = saveCapturedGroupInvite(req.username, {
+        url: `https://chat.whatsapp.com/${code}`,
+        code,
+        senderJid: existing?.senderJid || 'user',
+        senderName: existing?.senderName || 'User',
+        messageText: existing?.messageText || 'Manual join triggered',
+        groupName,
+        groupSize,
+        groupJid: joinedJid || groupJid,
+        creatorJid: existing?.creatorJid,
+        savedAt: new Date().toISOString(),
+        sessionId,
+        status: resultingStatus,
+        statusDetails,
+        joinedAt: resultingStatus === 'joined' ? new Date().toISOString() : existing?.joinedAt,
+        requestedAt: resultingStatus === 'requested' ? new Date().toISOString() : existing?.requestedAt,
+        lastCheckedAt: new Date().toISOString(),
+        joinApprovalMode
+      });
+
+      res.json({
+        success: true,
+        status: resultingStatus,
+        invite: updated,
+        message: resultingStatus === 'joined' 
+          ? `Successfully joined "${groupName}"!` 
+          : `Join request sent for "${groupName}". Awaiting admin approval.`
+      });
+    } catch (err: any) {
+      addLog(req.username, `❌ [JOIN ERROR] Failed to join group (${code}): ${err.message}`, 'error');
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/captured-group-invites/verify-all', requireAuth, async (req: any, res) => {
+    const { sessionId } = req.body;
+    try {
+      const result = await verifyAllSavedGroups(req.username, sessionId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.post('/api/captured-group-invites/request-admin/:code', requireAuth, async (req: any, res) => {
+    const { code } = req.params;
+    const { customMessage, sendDirectMessage = false, sessionId = 'primary' } = req.body;
+
+    const invites = loadUserGroupInvites(req.username);
+    const invite = invites.find(i => i.code === code);
+    if (!invite) {
+      return res.status(404).json({ success: false, error: 'Saved group invite not found.' });
+    }
+
+    const groupName = invite.groupName || 'the group';
+    const url = invite.url || `https://chat.whatsapp.com/${code}`;
+    const defaultText = `Hello! I noticed I was removed from *${groupName}*. Could you please re-add me or approve my request to rejoin? Here is the link: ${url}. Thank you!`;
+    const messageText = customMessage?.trim() || defaultText;
+
+    let adminJid = invite.creatorJid || '';
+    let adminPhone = '';
+    if (adminJid) {
+      adminPhone = adminJid.split('@')[0].split(':')[0];
+    }
+
+    let directSent = false;
+    if (sendDirectMessage && adminJid) {
+      let sockInstance = sessions.get(`${req.username}:${sessionId}`)?.sock;
+      if (!sockInstance) {
+        for (const [k, v] of sessions.entries()) {
+          if (k.startsWith(`${req.username}:`) && v?.sock && v.status === 'connected') {
+            sockInstance = v.sock;
+            break;
+          }
+        }
+      }
+      if (sockInstance) {
+        try {
+          const targetAdminJid = adminJid.includes('@') ? adminJid : `${adminJid}@s.whatsapp.net`;
+          await sockInstance.sendMessage(targetAdminJid, { text: messageText });
+          directSent = true;
+          addLog(req.username, `📩 [ADMIN REQUEST SENT] Sent re-join request to admin (+${adminPhone}) for group "${groupName}".`, 'success');
+        } catch (err: any) {
+          addLog(req.username, `⚠️ [ADMIN REQUEST SEND FAILED] Could not send direct message to admin (+${adminPhone}): ${err.message}`, 'info');
+        }
+      }
+    }
+
+    const waChatUrl = adminPhone ? `https://wa.me/${adminPhone}?text=${encodeURIComponent(messageText)}` : '';
+
+    res.json({
+      success: true,
+      adminJid,
+      adminPhone,
+      messageText,
+      directSent,
+      waChatUrl,
+      message: directSent 
+        ? `Request sent directly to admin (+${adminPhone}) via WhatsApp!` 
+        : `Admin request template prepared.`
+    });
+  });
+
+  app.delete('/api/captured-group-invites/:code', requireAuth, (req: any, res) => {
+    const rawCode = req.params.code;
+    const cleanCode = decodeURIComponent(rawCode).trim().toLowerCase();
+    const filePath = path.join(getUserDir(req.username), 'group.json');
+    try {
+      let invites = loadUserGroupInvites(req.username);
+      invites = invites.filter(i => {
+        const c = String(i.code || '').trim().toLowerCase();
+        const id = String(i.id || '').trim().toLowerCase();
+        return c !== cleanCode && id !== cleanCode && c !== rawCode.toLowerCase();
+      });
+      fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
+
+      if (db && !isQuotaExceeded) {
+        deleteDoc(doc(db, 'group_invites', `${req.username}___${cleanCode}`)).catch(() => {});
+        deleteDoc(doc(db, 'group_invites', `${req.username}___${rawCode}`)).catch(() => {});
+      }
+
+      addLog(req.username, `Deleted saved group link (${cleanCode}) from group.json.`, 'info');
+      res.json({ success: true, message: 'Group invite removed successfully.', remainingCount: invites.length });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   app.delete('/api/captured-group-invites', requireAuth, (req: any, res) => {
     const filePath = path.join(getUserDir(req.username), 'group.json');
     try {
@@ -4342,94 +5883,27 @@ function getFirestoreStatusPayload() {
   });
 
   app.delete('/api/shares/:id', requireAuth, (req: any, res) => {
-    const { id } = req.params;
+    const rawId = req.params.id;
+    const cleanId = decodeURIComponent(rawId).trim();
     let shares = loadUserShares(req.username);
-    const initialLength = shares.length;
-    shares = shares.filter(s => s.id !== id);
-    if (shares.length < initialLength) {
-      saveUserShares(req.username, shares);
-      addLog(req.username, `🗑️ Deleted captured share "${id}".`, 'success');
-      res.json({ success: true, message: 'Share deleted successfully.' });
-    } else {
-      res.status(404).json({ success: false, error: 'Share not found' });
+    shares = shares.filter(s => String(s.id).trim() !== cleanId && String(s.id).trim() !== rawId);
+    saveUserShares(req.username, shares);
+    addLog(req.username, `🗑️ Deleted captured share "${cleanId}".`, 'success');
+    res.json({ success: true, message: 'Share deleted successfully.' });
+  });
+
+  app.delete('/api/shares', requireAuth, (req: any, res) => {
+    try {
+      saveUserShares(req.username, []);
+      addLog(req.username, '🧹 All captured shares cleared.', 'success');
+      res.json({ success: true, message: 'All captured shares cleared successfully.' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  // Helper to format/transform messages for native forwarding with the "Forwarded" tag
-  function prepareForwardedMessage(originalQuotedMessage: any) {
-    if (!originalQuotedMessage) return originalQuotedMessage;
-    
-    // Clean deep copy to avoid mutating the database stored object
-    const quotedMessage = JSON.parse(JSON.stringify(originalQuotedMessage));
-    
-    // Case 1: Simple plain text conversation
-    if (quotedMessage.conversation) {
-      return {
-        extendedTextMessage: {
-          text: quotedMessage.conversation,
-          contextInfo: {
-            isForwarded: true,
-            forwardingScore: 1
-          }
-        }
-      };
-    }
-    
-    // Case 2: Standard structured messages supporting contextInfo
-    const messageKeys = [
-      'extendedTextMessage',
-      'imageMessage',
-      'videoMessage',
-      'audioMessage',
-      'documentMessage',
-      'stickerMessage',
-      'contactMessage',
-      'contactsArrayMessage',
-      'locationMessage',
-      'liveLocationMessage',
-      'groupInviteMessage',
-      'templateMessage',
-      'buttonsMessage',
-      'listMessage',
-      'documentWithCaptionMessage',
-      'imageMessageWithCaption',
-      'videoMessageWithCaption'
-    ];
-    
-    for (const key of messageKeys) {
-      if (quotedMessage[key]) {
-        const inner = quotedMessage[key];
-        if (inner && typeof inner === 'object') {
-          inner.contextInfo = {
-            ...(inner.contextInfo || {}),
-            isForwarded: true,
-            forwardingScore: 1
-          };
-        }
-        return quotedMessage;
-      }
-    }
-    
-    // Fallback: If we couldn't match a known message key, try to scan keys ending with "Message"
-    const anyMessageKey = Object.keys(quotedMessage).find(k => k.endsWith('Message'));
-    if (anyMessageKey) {
-      const inner = quotedMessage[anyMessageKey];
-      if (inner && typeof inner === 'object') {
-        inner.contextInfo = {
-          ...(inner.contextInfo || {}),
-          isForwarded: true,
-          forwardingScore: 1
-        };
-      }
-      return quotedMessage;
-    }
-    
-    // Fallback: If no recognized structure, return as is
-    return quotedMessage;
-  }
-
   app.post('/api/shares/forward', requireAuth, async (req: any, res) => {
-    const { shareId, targetJids, sessionId } = req.body;
+    const { shareId, targetJids, sessionId, channelInfo, useChannelTag, channelLink, appendChannelLink } = req.body;
     if (!shareId || !Array.isArray(targetJids) || targetJids.length === 0) {
       return res.status(400).json({ success: false, error: 'Invalid shareId or targetJids' });
     }
@@ -4451,6 +5925,47 @@ function getFirestoreStatusPayload() {
     const userSettings = loadUserSettings(req.username);
     const batchSize = userSettings.shareBatchSize || 5;
     const pauseSec = userSettings.shareBatchPauseSeconds || 10;
+
+    // Determine target channel tag info and effective direct channel link:
+    let effectiveChannelInfo: { newsletterJid: string; newsletterName: string; serverMessageId?: number; channelLink?: string } | null = null;
+    let effectiveChannelLink = channelLink 
+      ? String(channelLink).trim() 
+      : (share.channelLink || share.channelInfo?.channelLink || userSettings.defaultChannelInviteLink);
+
+    if (useChannelTag === false) {
+      effectiveChannelInfo = null;
+    } else {
+      const candidateTag = channelInfo?.newsletterJid || channelInfo?.newsletterName || effectiveChannelLink;
+      const resolved = await resolveWhatsAppChannel(
+        sess.sock,
+        req.username,
+        candidateTag,
+        channelInfo || share.channelInfo,
+        effectiveChannelLink
+      );
+      if (resolved && isNumericNewsletterJid(resolved.newsletterJid)) {
+        effectiveChannelInfo = {
+          newsletterJid: resolved.newsletterJid,
+          newsletterName: resolved.newsletterName,
+          serverMessageId: resolved.serverMessageId || 1,
+          channelLink: resolved.inviteLink || effectiveChannelLink
+        };
+        effectiveChannelLink = resolved.inviteLink || effectiveChannelLink;
+      } else if (share.channelInfo && isNumericNewsletterJid(share.channelInfo.newsletterJid)) {
+        effectiveChannelInfo = {
+          ...share.channelInfo,
+          channelLink: share.channelInfo.channelLink || effectiveChannelLink
+        };
+      } else if (userSettings.autoAttachChannelTag && userSettings.defaultChannelJid && isNumericNewsletterJid(userSettings.defaultChannelJid)) {
+        effectiveChannelInfo = {
+          newsletterJid: userSettings.defaultChannelJid,
+          newsletterName: userSettings.defaultChannelName || 'WhatsApp Channel',
+          serverMessageId: 1,
+          channelLink: userSettings.defaultChannelInviteLink
+        };
+        effectiveChannelLink = effectiveChannelLink || userSettings.defaultChannelInviteLink;
+      }
+    }
 
     const results: Array<{ jid: string; success: boolean; error?: string }> = [];
     const validTargetJids: string[] = [];
@@ -4477,31 +5992,27 @@ function getFirestoreStatusPayload() {
       }
     }
 
+    // Prepare message payload with unwrapped media/text structure, formatting, channel tags and clickable link
+    const preparedMsgPayload = prepareForwardedMessage(share.quotedMessage, effectiveChannelInfo, {
+      channelLink: effectiveChannelLink,
+      appendChannelLink: appendChannelLink === true && !!effectiveChannelLink
+    });
+
     // Process valid targets in batches of configured batchSize
     for (let i = 0; i < validTargetJids.length; i += batchSize) {
       const batch = validTargetJids.slice(i, i + batchSize);
 
       for (const formattedJid of batch) {
         try {
-          addLog(req.username, `Forwarding shared message to ${formattedJid}...`, 'info');
+          addLog(req.username, `Forwarding shared message to ${formattedJid}...${effectiveChannelInfo ? ` [Channel Tag: ${effectiveChannelInfo.newsletterName}]` : ''}${effectiveChannelLink ? ` [Link: ${effectiveChannelLink}]` : ''}`, 'info');
           
-          // Construct native message representation for Baileys to forward the same original message
-          const originalMessage = {
-            key: {
-              remoteJid: share.from,
-              id: share.quotedMessageId,
-              fromMe: share.quotedSender === sess.sock.user?.id || (sess.sock.user?.id && share.quotedSender.split('@')[0] === sess.sock.user?.id.split(':')[0]),
-              participant: share.quotedSender
-            },
-            message: share.quotedMessage
-          };
-          
-          // Forward message natively using Baileys { forward: ... } option
           await simulateHumanTyping(sess.sock, formattedJid, share.displayText);
-          await sess.sock.sendMessage(formattedJid, { forward: originalMessage });
+
+          // Dispatch using forwardMessagePayloadWithChannel (preserves channel tag, media & formatting)
+          await forwardMessagePayloadWithChannel(sess.sock, formattedJid, preparedMsgPayload);
           
           results.push({ jid: formattedJid, success: true });
-          addLog(req.username, `✅ Forwarded message to ${formattedJid} successfully.`, 'success');
+          addLog(req.username, `✅ Forwarded message to ${formattedJid} successfully.${effectiveChannelInfo ? ` (Channel Tag: ${effectiveChannelInfo.newsletterName})` : ''}`, 'success');
         } catch (err: any) {
           console.error(`Error forwarding to ${formattedJid}:`, err);
           let errMsg = err?.message || String(err);
@@ -4532,13 +6043,203 @@ function getFirestoreStatusPayload() {
       }
     }
 
-    // Update share status
+    // Update share status & optionally update channelInfo/channelLink if customized
     share.status = 'forwarded';
+    if (effectiveChannelInfo) {
+      share.channelInfo = effectiveChannelInfo;
+    }
+    if (effectiveChannelLink) {
+      share.channelLink = effectiveChannelLink;
+    }
     const uniqueTargets = Array.from(new Set([...(share.forwardedTo || []), ...results.filter(r => r.success).map(r => r.jid)]));
     share.forwardedTo = uniqueTargets;
     saveUserShares(req.username, shares);
 
-    res.json({ success: true, results });
+    res.json({ success: true, results, channelInfo: effectiveChannelInfo, channelLink: effectiveChannelLink });
+  });
+
+  // Update or clear Channel Tag & Channel Link for a specific captured share
+  app.put('/api/shares/:id/channel', requireAuth, async (req: any, res) => {
+    const { id } = req.params;
+    const { newsletterJid, newsletterName, serverMessageId, channelLink, clear, sessionId } = req.body;
+    const shares = loadUserShares(req.username);
+    const share = shares.find(s => s.id === id);
+
+    if (!share) {
+      return res.status(404).json({ success: false, error: 'Share not found.' });
+    }
+
+    if (clear) {
+      delete share.channelInfo;
+      delete share.channelLink;
+      addLog(req.username, `🏷️ Cleared Channel Tag & Link on share "${id}".`, 'info');
+    } else {
+      if (!newsletterJid && !newsletterName && !channelLink) {
+        return res.status(400).json({ success: false, error: 'newsletterJid, newsletterName, or channelLink is required.' });
+      }
+
+      const sessId = sessionId || 'primary';
+      const userSessKey = `${req.username}:${sessId}`;
+      const sess = sessions.get(userSessKey);
+
+      const cleanLink = channelLink ? String(channelLink).trim() : undefined;
+      const parsedMsgId = cleanLink ? extractChannelMessageId(cleanLink) : undefined;
+      const effectiveMsgId = parsedMsgId || Number(serverMessageId) || 1;
+
+      const resolved = await resolveWhatsAppChannel(
+        sess?.sock,
+        req.username,
+        newsletterJid || newsletterName || cleanLink,
+        { newsletterJid, newsletterName, serverMessageId: effectiveMsgId, channelLink: cleanLink },
+        cleanLink
+      );
+
+      if (resolved && isNumericNewsletterJid(resolved.newsletterJid)) {
+        share.channelInfo = {
+          newsletterJid: resolved.newsletterJid,
+          newsletterName: (newsletterName || resolved.newsletterName).trim(),
+          serverMessageId: effectiveMsgId,
+          channelLink: cleanLink || resolved.inviteLink
+        };
+        share.channelLink = cleanLink || resolved.inviteLink;
+        addLog(req.username, `🏷️ Attached Verified Channel Tag "${share.channelInfo.newsletterName}" (${share.channelInfo.newsletterJid}) to share "${id}".${share.channelLink ? ` Link: ${share.channelLink}` : ''}`, 'success');
+      } else {
+        const cleanName = (newsletterName || newsletterJid || 'WhatsApp Channel').trim();
+        share.channelInfo = {
+          newsletterJid: '',
+          newsletterName: cleanName,
+          serverMessageId: effectiveMsgId,
+          channelLink: cleanLink
+        };
+        share.channelLink = cleanLink;
+        addLog(req.username, `⚠️ Channel Tag "${cleanName}" saved without verified numeric JID. Provide the channel invite link to make it clickable.`, 'info');
+      }
+    }
+
+    saveUserShares(req.username, shares);
+    res.json({ success: true, share, message: 'Channel Tag & Link updated successfully.' });
+  });
+
+  // Fetch all followed / owned WhatsApp Channels for the current session
+  app.get('/api/channels', requireAuth, async (req: any, res) => {
+    const sessId = req.query.sessionId || 'primary';
+    const userSessKey = `${req.username}:${sessId}`;
+    const sess = sessions.get(userSessKey);
+    const cached = loadUserChannels(req.username);
+
+    if (!sess || !sess.sock) {
+      return res.json({ success: true, channels: cached, warning: 'WhatsApp session is not connected. Showing cached channels.' });
+    }
+
+    try {
+      let channels: CachedChannel[] = [];
+
+      if (typeof sess.sock.newsletterFetchAllParticipating === 'function') {
+        const result: any = await sess.sock.newsletterFetchAllParticipating();
+        const rawList = Array.isArray(result) ? result : (result && typeof result === 'object' ? Object.values(result) : []);
+        if (rawList.length > 0) {
+          channels = rawList.map((c: any) => ({
+            id: c.id || c.jid || '',
+            name: c.name || c.subject || c.thread_metadata?.name?.text || 'WhatsApp Channel',
+            subscribers: Number(c.subscribers || c.subscribers_count || 0),
+            role: c.viewer_metadata?.role || c.role || 'subscriber',
+            invite: c.thread_metadata?.invite || c.invite || '',
+            verified: true
+          })).filter((c: any) => isNumericNewsletterJid(c.id));
+          saveUserChannels(req.username, channels);
+        }
+      }
+
+      // Merge with any cached channels not returned in participating
+      const combined = [...channels];
+      for (const c of cached) {
+        if (!combined.find(x => x.id === c.id)) {
+          combined.push(c);
+        }
+      }
+
+      res.json({ success: true, channels: combined });
+    } catch (err: any) {
+      console.warn('[CHANNELS] Error fetching participating newsletters:', err?.message);
+      res.json({ success: true, channels: cached, message: err.message });
+    }
+  });
+
+  // Inspect WhatsApp Channel Link or JID
+  app.post('/api/channels/inspect', requireAuth, async (req: any, res) => {
+    const { channelInput, sessionId } = req.body;
+    if (!channelInput || typeof channelInput !== 'string') {
+      return res.status(400).json({ success: false, error: 'channelInput string is required.' });
+    }
+
+    const sessId = sessionId || 'primary';
+    const userSessKey = `${req.username}:${sessId}`;
+    const sess = sessions.get(userSessKey);
+
+    const msgId = extractChannelMessageId(channelInput.trim());
+
+    const resolved = await resolveWhatsAppChannel(
+      sess?.sock,
+      req.username,
+      channelInput.trim()
+    );
+
+    if (resolved && isNumericNewsletterJid(resolved.newsletterJid)) {
+      return res.json({
+        success: true,
+        verified: true,
+        channel: {
+          id: resolved.newsletterJid,
+          name: resolved.newsletterName,
+          invite: resolved.inviteLink,
+          channelLink: resolved.inviteLink,
+          serverMessageId: resolved.serverMessageId || msgId || 1,
+          verified: true
+        }
+      });
+    }
+
+    // Try direct newsletterMetadata if sock is active
+    if (sess?.sock && typeof sess.sock.newsletterMetadata === 'function') {
+      const inviteCode = extractChannelInviteCode(channelInput.trim());
+      if (inviteCode) {
+        try {
+          const meta: any = await sess.sock.newsletterMetadata('invite', inviteCode);
+          if (meta && isNumericNewsletterJid(meta.id)) {
+            const officialName = meta.name || meta.thread_metadata?.name?.text || 'WhatsApp Channel';
+            const directLink = msgId && msgId > 1
+              ? `https://whatsapp.com/channel/${inviteCode}/${msgId}`
+              : `https://whatsapp.com/channel/${inviteCode}`;
+            const channelObj: CachedChannel = {
+              id: meta.id,
+              name: officialName,
+              subscribers: Number(meta.subscribers || meta.subscribers_count || 0),
+              invite: inviteCode,
+              verified: true
+            };
+            const cached = loadUserChannels(req.username);
+            if (!cached.find(c => c.id === channelObj.id)) {
+              cached.push(channelObj);
+              saveUserChannels(req.username, cached);
+            }
+            return res.json({
+              success: true,
+              verified: true,
+              channel: {
+                ...channelObj,
+                channelLink: directLink,
+                serverMessageId: msgId || 1
+              }
+            });
+          }
+        } catch (e: any) {}
+      }
+    }
+
+    res.status(404).json({
+      success: false,
+      error: `Could not verify WhatsApp Channel "${channelInput}". Ensure you provide a valid WhatsApp Channel invite link (e.g. https://whatsapp.com/channel/...) and that your WhatsApp account is connected.`
+    });
   });
 
   // Leads APIs
@@ -4614,13 +6315,167 @@ function getFirestoreStatusPayload() {
 
   // QR and Status APIs
   app.get('/api/qr', requireAuth, (req: any, res) => {
-    const sessionId = (req.query.sessionId as string) || 'primary';
+    const sessionId = (req.query.sessionId as string) || (req.query.session as string) || 'primary';
     const userSessKey = `${req.username}:${sessionId}`;
-    const sess = sessions.get(userSessKey);
+    let sess = sessions.get(userSessKey);
+
+    if ((!sess || sess.status === 'disconnected') && !sess?.lastError?.includes('replaced') && !sess?.lastError?.includes('Conflict')) {
+      const userConfigs = loadUserSessionsConfig(req.username);
+      const conf = userConfigs.find(c => c.id === sessionId);
+      connectToWhatsApp(req.username, sessionId, conf?.name || (sessionId === 'primary' ? 'Primary Account' : 'WhatsApp Session')).catch(() => {});
+      sess = sessions.get(userSessKey);
+    }
+
     res.json({ 
+      success: true,
+      sessionId,
+      sessionName: sess?.name || (sessionId === 'primary' ? 'Primary Account' : 'WhatsApp Session'),
       qr: sess ? sess.qrBase64 : null, 
-      status: sess ? sess.status : 'disconnected' 
+      status: sess ? sess.status : 'disconnected',
+      user: sess && sess.status === 'connected' ? sess.user : null,
+      pairingCode: sess ? sess.activePairingCode : null,
+      error: sess ? sess.lastError : null,
+      timestamp: Date.now()
     });
+  });
+
+  // Standalone lightweight HTML live QR scanner view (optimized for secondary phones & external screens)
+  app.get('/view-qr', (req: any, res) => {
+    const sessionId = (req.query.sessionId as string) || (req.query.session as string) || 'primary';
+    const token = (req.query.token as string) || '';
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Live WhatsApp QR Code • Real-Time Sync</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: #030712; color: #f3f4f6; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+    body.light { background-color: #ffffff; color: #111827; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 24px; padding: 24px; max-width: 420px; width: 100%; text-align: center; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); position: relative; }
+    body.light .card { background: #ffffff; border: 2px solid #10b981; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); }
+    .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; font-size: 12px; font-weight: bold; border-bottom: 1px solid #1f2937; padding-bottom: 12px; }
+    body.light .header { border-bottom-color: #e5e7eb; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(16, 185, 129, 0.15); color: #10b981; border-radius: 9999px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .pulse-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; display: inline-block; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } }
+    .qr-frame { background: #ffffff; border-radius: 16px; padding: 14px; display: inline-block; margin: 12px 0; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); position: relative; }
+    .qr-img { width: 240px; height: 240px; display: block; object-fit: contain; }
+    .instructions { font-size: 13px; color: #9ca3af; margin: 8px 0; line-height: 1.4; }
+    body.light .instructions { color: #4b5563; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 16px; font-size: 12px; font-weight: 700; border-radius: 12px; cursor: pointer; border: none; transition: 0.2s; text-decoration: none; }
+    .btn-primary { background: #10b981; color: #030712; }
+    .btn-primary:hover { background: #059669; }
+    .btn-secondary { background: #1f2937; color: #e5e7eb; border: 1px solid #374151; }
+    body.light .btn-secondary { background: #f3f4f6; color: #1f2937; border-color: #d1d5db; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 16px; }
+    .connected-box { display: none; padding: 24px 0; }
+    .connected-box.show { display: block; animation: pop 0.4s ease; }
+    @keyframes pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .check-icon { font-size: 48px; color: #10b981; margin-bottom: 8px; }
+    .notice { font-size: 11px; color: #6b7280; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <div class="badge"><span class="pulse-dot"></span> LIVE SYNC ACTIVE</div>
+      <button onclick="toggleTheme()" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;">☀️ Boost Brightness</button>
+    </div>
+
+    <div id="connecting-view">
+      <h2 style="font-size: 16px; font-weight: bold; margin-bottom: 4px;">Point Camera to Scan</h2>
+      <p class="instructions">WhatsApp &gt; <strong>Linked Devices</strong> &gt; <strong>Link a Device</strong></p>
+
+      <div class="qr-frame">
+        <img id="qr-img" class="qr-img" src="" alt="Waiting for QR code..." />
+        <div id="qr-loading" style="display:none; width:240px; height:240px; line-height:240px; color:#111; font-size:12px; font-weight:bold;">Loading dynamic QR...</div>
+      </div>
+
+      <p class="notice">⚡ Auto-refreshes on this screen in real-time as QR changes</p>
+
+      <div class="actions">
+        <button onclick="forceRefresh()" class="btn btn-primary" id="refresh-btn">🔄 Refresh QR</button>
+        <button onclick="copyCurrentUrl()" class="btn btn-secondary" id="copy-btn">📋 Copy Link</button>
+      </div>
+    </div>
+
+    <div id="connected-view" class="connected-box">
+      <div class="check-icon">✓</div>
+      <h2 style="font-size: 18px; font-weight: bold; color: #10b981;">WhatsApp Linked!</h2>
+      <p class="instructions" id="user-info" style="font-weight: bold; color: #f3f4f6; margin-top: 6px;"></p>
+      <p class="notice" style="margin-top: 16px;">Connection is live. You can close this screen or return to the dashboard.</p>
+    </div>
+  </div>
+
+  <script>
+    const sessionId = "${sessionId}";
+    const token = "${token}";
+    let lastQr = null;
+
+    function toggleTheme() {
+      document.body.classList.toggle('light');
+    }
+
+    function copyCurrentUrl() {
+      navigator.clipboard.writeText(window.location.href);
+      const btn = document.getElementById('copy-btn');
+      btn.innerText = 'Copied!';
+      setTimeout(() => btn.innerText = '📋 Copy Link', 2000);
+    }
+
+    async function forceRefresh() {
+      const btn = document.getElementById('refresh-btn');
+      btn.innerText = 'Refreshing...';
+      try {
+        await fetch('/api/sessions/regenerate-qr?token=' + encodeURIComponent(token), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: sessionId, sessionId: sessionId })
+        });
+      } catch (e) {}
+      setTimeout(fetchQr, 1000);
+    }
+
+    async function fetchQr() {
+      try {
+        const res = await fetch('/api/qr?sessionId=' + encodeURIComponent(sessionId) + '&token=' + encodeURIComponent(token));
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (data.status === 'connected') {
+          document.getElementById('connecting-view').style.display = 'none';
+          const cv = document.getElementById('connected-view');
+          cv.classList.add('show');
+          if (data.user) {
+            document.getElementById('user-info').innerText = '+' + (data.user.id || '').split(':')[0].split('@')[0] + ' (' + (data.user.name || '') + ')';
+          }
+          return;
+        }
+
+        if (data.qr && data.qr !== lastQr) {
+          lastQr = data.qr;
+          const img = document.getElementById('qr-img');
+          img.src = data.qr;
+          img.style.display = 'block';
+          document.getElementById('qr-loading').style.display = 'none';
+        } else if (!data.qr && !lastQr) {
+          document.getElementById('qr-img').style.display = 'none';
+          document.getElementById('qr-loading').style.display = 'block';
+        }
+      } catch (e) {}
+    }
+
+    fetchQr();
+    setInterval(fetchQr, 1200);
+  </script>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
   });
 
   app.get('/api/status', requireAuth, (req: any, res) => {
@@ -4802,7 +6657,7 @@ function getFirestoreStatusPayload() {
       const credsFile = path.join(authFolder, 'creds.json');
       const hasSavedCredentials = fs.existsSync(credsFile);
 
-      if (hasSavedCredentials && (!s || s.status === 'disconnected') && !s?.lastError?.includes('replaced') && !s?.lastError?.includes('Conflict')) {
+      if ((!s || s.status === 'disconnected') && !s?.lastError?.includes('replaced') && !s?.lastError?.includes('Conflict')) {
         connectToWhatsApp(req.username, c.id, c.name).catch(() => {});
       }
 
@@ -4857,6 +6712,73 @@ function getFirestoreStatusPayload() {
     } catch (err: any) {
       addLog(req.username, `[SESSION: ${targetId}] Reconnect error: ${err.message}`, 'error');
       res.status(500).json({ success: false, error: err.message || 'Failed to reconnect session.' });
+    }
+  });
+
+  // Dedicated endpoint to force-purge stale credentials and generate a fresh live QR code
+  app.post('/api/sessions/regenerate-qr', requireAuth, async (req: any, res) => {
+    const { id, sessionId } = req.body;
+    const targetId = id || sessionId;
+
+    if (!targetId) {
+      return res.status(400).json({ success: false, error: 'Session ID is required.' });
+    }
+
+    const userSessKey = `${req.username}:${targetId}`;
+    const authFolder = path.join(process.cwd(), 'data', req.username, 'auth_info_' + targetId);
+
+    // Cancel pending reconnect timer & reset failure counters
+    if (reconnectTimers.has(userSessKey)) {
+      clearTimeout(reconnectTimers.get(userSessKey)!);
+      reconnectTimers.delete(userSessKey);
+    }
+    connectingLocks.delete(userSessKey);
+    sessionReconnectFailures.delete(userSessKey);
+
+    // Cleanly unbind listeners and terminate active socket
+    const existingSess = sessions.get(userSessKey);
+    if (existingSess) {
+      existingSess.status = 'connecting';
+      existingSess.qrBase64 = null;
+      existingSess.activePairingCode = null;
+      existingSess.user = null;
+      existingSess.lastError = null;
+
+      if (existingSess.sock) {
+        try {
+          existingSess.sock.ev.removeAllListeners();
+          if (existingSess.sock.ws) {
+            try { existingSess.sock.ws.close(); } catch (e) {}
+          }
+          existingSess.sock.end(undefined);
+        } catch (e) {}
+        existingSess.sock = null;
+      }
+    }
+
+    // Purge the auth folder containing stale creds.json to force Baileys into fresh pairing mode
+    try {
+      if (fs.existsSync(authFolder)) {
+        fs.rmSync(authFolder, { recursive: true, force: true });
+        addLog(req.username, `[SESSION: ${targetId}] Stale credentials purged. Spawning fresh Baileys socket to generate a new QR code...`, 'info');
+      }
+    } catch (err: any) {
+      console.error(`[SESSION: ${targetId}] Failed to purge auth directory:`, err);
+    }
+
+    const configs = loadUserSessionsConfig(req.username);
+    const sessConfig = configs.find(c => c.id === targetId);
+    const sessionName = sessConfig ? sessConfig.name : (targetId === 'primary' ? 'Primary Account' : 'WhatsApp Session');
+
+    try {
+      await connectToWhatsApp(req.username, targetId, sessionName);
+      res.json({ 
+        success: true, 
+        message: `Stale credentials cleared! Generating brand new WhatsApp QR code for session "${targetId}"...` 
+      });
+    } catch (err: any) {
+      addLog(req.username, `[SESSION: ${targetId}] QR regeneration error: ${err.message}`, 'error');
+      res.status(500).json({ success: false, error: err.message || 'Failed to generate new QR code.' });
     }
   });
 
@@ -5247,6 +7169,14 @@ function getFirestoreStatusPayload() {
     if (recipients.length === 0) {
       return res.status(400).json({ success: false, error: 'No valid recipients supplied.' });
     }
+
+    // Automatically scan outbound text & captions to capture and process any WhatsApp Group links being sent
+    try {
+      for (const seq of sequenceItems) {
+        if (seq.message) scanTextForGroupLinks(req.username, seq.message, recipients[0], sessionIds[0]);
+        if (seq.footer) scanTextForGroupLinks(req.username, seq.footer, recipients[0], sessionIds[0]);
+      }
+    } catch (e) {}
 
     // Validate sessions
     const validSessions = sessionIds.filter((sid: string) => {
@@ -5845,9 +7775,92 @@ function runSystemHealthMonitor() {
   }
 }
 
+// Background runner to re-check and auto-join groups with members below threshold (< 400)
+async function runGroupAutoRetryWorker() {
+  try {
+    const users = loadUsers();
+    for (const u of users) {
+      const username = u.username;
+      const settings = loadUserSettings(username);
+      if (!settings.autoJoinGroupsEnabled) continue;
+
+      const invites = loadUserGroupInvites(username);
+      const minMembers = settings.autoJoinMinMembers || 400;
+      const now = Date.now();
+
+      let activeSock: any = null;
+      let activeSessionId = 'primary';
+      for (const [key, sess] of sessions.entries()) {
+        if (key.startsWith(`${username}:`) && sess?.sock && sess.status === 'connected') {
+          activeSock = sess.sock;
+          activeSessionId = sess.id;
+          break;
+        }
+      }
+      if (!activeSock) continue;
+
+      let hasChanges = false;
+      for (const inv of invites) {
+        if (inv.status === 'members_too_low' && inv.nextRetryAt && new Date(inv.nextRetryAt).getTime() <= now) {
+          try {
+            const info = await activeSock.groupGetInviteInfo(inv.code);
+            if (info) {
+              inv.groupSize = typeof info.size === 'number' ? info.size : (info.participants?.length || inv.groupSize);
+              inv.groupName = info.subject || inv.groupName;
+              inv.lastCheckedAt = new Date().toISOString();
+              
+              if (inv.groupSize >= minMembers) {
+                addLog(username, `🎯 [AUTO-JOIN RETRY] Group "${inv.groupName}" now has ${inv.groupSize} members (>= ${minMembers})! Joining now...`, 'info');
+                const joinResult = await activeSock.groupAcceptInvite(inv.code);
+                if (info.joinApprovalMode) {
+                  inv.status = 'requested';
+                  inv.requestedAt = new Date().toISOString();
+                  inv.statusDetails = 'Membership request submitted via auto-retry. Awaiting admin approval.';
+                } else {
+                  inv.status = 'joined';
+                  inv.joinedAt = new Date().toISOString();
+                  inv.groupJid = joinResult || info.id || inv.groupJid;
+                  inv.statusDetails = `Successfully joined on auto-retry (${inv.groupSize} members)!`;
+                  if (inv.groupJid) {
+                    saveUserGroupDetails(username, inv.groupJid, inv.groupName, activeSessionId, {
+                      memberCount: inv.groupSize,
+                      canUserSend: true
+                    });
+                  }
+                }
+                hasChanges = true;
+              } else {
+                inv.retryCount = (inv.retryCount || 0) + 1;
+                const retryInterval = settings.autoRetryIntervalMinutes || 15;
+                inv.nextRetryAt = new Date(Date.now() + retryInterval * 60 * 1000).toISOString();
+                inv.statusDetails = `Members (${inv.groupSize}) still < ${minMembers}. Next check in ${retryInterval}m (Retry #${inv.retryCount}).`;
+                hasChanges = true;
+              }
+            }
+          } catch (err: any) {
+            inv.retryCount = (inv.retryCount || 0) + 1;
+            inv.nextRetryAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+            hasChanges = true;
+          }
+        }
+      }
+      if (hasChanges) {
+        const filePath = path.join(getUserDir(username), 'group.json');
+        fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
+      }
+    }
+  } catch (e) {
+    console.error('Group auto-retry worker error:', e);
+  }
+}
+
 // Trigger initial health check in 10 seconds, then repeat every 5 minutes (300,000 ms)
 setTimeout(runSystemHealthMonitor, 10000);
 setInterval(runSystemHealthMonitor, 5 * 60 * 1000);
+
+// Run group auto-retry worker every 3 minutes
+setTimeout(runGroupAutoRetryWorker, 15000);
+setInterval(runGroupAutoRetryWorker, 3 * 60 * 1000);
 
 startServer().catch((err) => {
   console.error('Fatal: Server startup failed:', err);

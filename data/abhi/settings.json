@@ -1,0 +1,6 @@
+{
+  "secretPrefix": ".",
+  "disableTextProcessing": false,
+  "shareBatchSize": 5,
+  "shareBatchPauseSeconds": 10
+}

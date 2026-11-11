@@ -128,15 +128,13 @@ export default function WorkflowsBuilderPage({
   };
 
   const handleDeleteWorkflow = (id: string, name: string) => {
-    if (window.confirm(`Are you sure you want to delete the automation rule "${name}"?`)) {
-      const updated = workflowsList.filter(w => w.id !== id);
-      setWorkflowsList(updated);
-      
-      if (selectedWorkflowId === id) {
-        setSelectedWorkflowId(updated.length > 0 ? updated[0].id : null);
-      }
-      setFeedback({ type: 'success', text: 'Workflow rule removed. Click "Save and Deploy" to apply changes on the server.' });
+    const updated = workflowsList.filter(w => w.id !== id);
+    setWorkflowsList(updated);
+    
+    if (selectedWorkflowId === id) {
+      setSelectedWorkflowId(updated.length > 0 ? updated[0].id : null);
     }
+    setFeedback({ type: 'success', text: `Automation rule "${name}" removed. Click "Save and Deploy" to apply changes on the server.` });
   };
 
   const handleAddButton = () => {
