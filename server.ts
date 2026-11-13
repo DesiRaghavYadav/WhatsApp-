@@ -4,7 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
 import { createServer as createViteServer } from 'vite';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers, fetchLatestBaileysVersion } from '@queenanya/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers, fetchLatestBaileysVersion, proto } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -2557,6 +2557,7 @@ interface UserSettings {
   defaultChannelInviteLink?: string;
   autoAttachChannelTag?: boolean;
   appendChannelLinkToShare?: boolean; // defaults to false (link hidden from caption; native View Channel tag displayed)
+  showForwardedTagOnShare?: boolean; // defaults to true (show WhatsApp "Forwarded" badge on shared channel cards)
   autoJoinGroupsEnabled?: boolean;
   autoJoinMinMembers?: number; // defaults to 400
   autoRetryIntervalMinutes?: number; // defaults to 15
@@ -2578,6 +2579,7 @@ function loadUserSettings(username: string): UserSettings {
         defaultChannelInviteLink: data.defaultChannelInviteLink ? String(data.defaultChannelInviteLink).trim() : undefined,
         autoAttachChannelTag: !!data.autoAttachChannelTag,
         appendChannelLinkToShare: !!data.appendChannelLinkToShare,
+        showForwardedTagOnShare: data.showForwardedTagOnShare !== undefined ? !!data.showForwardedTagOnShare : true,
         autoJoinGroupsEnabled: !!data.autoJoinGroupsEnabled,
         autoJoinMinMembers: typeof data.autoJoinMinMembers === 'number' && data.autoJoinMinMembers > 0 ? data.autoJoinMinMembers : 400,
         autoRetryIntervalMinutes: typeof data.autoRetryIntervalMinutes === 'number' && data.autoRetryIntervalMinutes > 0 ? data.autoRetryIntervalMinutes : 15,
@@ -2593,6 +2595,7 @@ function loadUserSettings(username: string): UserSettings {
     shareBatchPauseSeconds: 10,
     autoAttachChannelTag: false,
     appendChannelLinkToShare: false,
+    showForwardedTagOnShare: true,
     autoJoinGroupsEnabled: false,
     autoJoinMinMembers: 400,
     autoRetryIntervalMinutes: 15,
@@ -2618,6 +2621,7 @@ function saveUserSettings(username: string, settings: Partial<UserSettings>) {
       defaultChannelInviteLink: settings.defaultChannelInviteLink !== undefined ? (settings.defaultChannelInviteLink ? settings.defaultChannelInviteLink.trim() : undefined) : existing.defaultChannelInviteLink,
       autoAttachChannelTag: settings.autoAttachChannelTag !== undefined ? !!settings.autoAttachChannelTag : existing.autoAttachChannelTag,
       appendChannelLinkToShare: settings.appendChannelLinkToShare !== undefined ? !!settings.appendChannelLinkToShare : existing.appendChannelLinkToShare,
+      showForwardedTagOnShare: settings.showForwardedTagOnShare !== undefined ? !!settings.showForwardedTagOnShare : (existing.showForwardedTagOnShare !== undefined ? existing.showForwardedTagOnShare : true),
       autoJoinGroupsEnabled: settings.autoJoinGroupsEnabled !== undefined ? !!settings.autoJoinGroupsEnabled : existing.autoJoinGroupsEnabled,
       autoJoinMinMembers: typeof settings.autoJoinMinMembers === 'number' && settings.autoJoinMinMembers > 0 ? settings.autoJoinMinMembers : (existing.autoJoinMinMembers || 400),
       autoRetryIntervalMinutes: typeof settings.autoRetryIntervalMinutes === 'number' && settings.autoRetryIntervalMinutes > 0 ? settings.autoRetryIntervalMinutes : (existing.autoRetryIntervalMinutes || 15),
@@ -2913,6 +2917,18 @@ async function resolveWhatsAppChannel(
 }
 
 // Captured Shares System
+interface ShareMediaItem {
+  id: string;
+  mediaType: 'image' | 'video' | 'document' | 'audio';
+  mimeType?: string;
+  fileName?: string;
+  caption?: string;
+  localFile?: string; // filename stored under share_media/<username>/
+  url?: string;
+  quotedMessage?: any;
+  addedAt: string;
+}
+
 interface CapturedShare {
   id: string;
   timestamp: string;
@@ -2924,6 +2940,8 @@ interface CapturedShare {
   displayText: string;
   mediaType?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'other';
   caption?: string;
+  extraMedia?: ShareMediaItem[];
+  cardLayout?: 'album' | 'carousel';
   channelInfo?: {
     newsletterJid: string;
     newsletterName: string;
@@ -2932,6 +2950,7 @@ interface CapturedShare {
   };
   channelLink?: string;
   appendChannelLink?: boolean;
+  showForwardedTag?: boolean;
   status: 'pending' | 'forwarded';
   forwardedTo: string[];
 }
@@ -3103,11 +3122,151 @@ function cleanChannelLinkFromText(text: string): string {
     .trim();
 }
 
-// Helper to format/transform messages for native forwarding with preserved media, native "View Channel" header tag and HIDDEN caption link
+// Parse WhatsApp chat flags for .share and .sharenow commands (e.g. noforward, --noforward, -nf, clean, forwarded, --carousel, --album)
+function parseShareCommandFlags(rawArg: string, defaultShowForwarded: boolean): {
+  cleanArg: string;
+  showForwardedTag: boolean;
+  hasExplicitForwardFlag: boolean;
+  cardLayout?: 'album' | 'carousel';
+} {
+  let showForwardedTag = defaultShowForwarded;
+  let hasExplicitForwardFlag = false;
+  let cardLayout: 'album' | 'carousel' | undefined;
+
+  if (!rawArg || !rawArg.trim()) {
+    return { cleanArg: '', showForwardedTag, hasExplicitForwardFlag, cardLayout };
+  }
+
+  const hideTokens = new Set(['--noforward', '-noforward', 'noforward', '--no-forward', 'no-forward', '-nf', 'nofwd', '--nofwd', 'notag', '--notag', 'clean']);
+  const showTokens = new Set(['--forwarded', '-forwarded', 'forwarded', '--forward', '-fwd', 'fwd', 'withforward', '--withforward']);
+  const carouselTokens = new Set(['--carousel', 'carousel']);
+  const albumTokens = new Set(['--album', 'album']);
+
+  // Split preserving pipe separators cleanly
+  const tokens = rawArg.trim().split(/\s+/);
+  const kept: string[] = [];
+
+  for (const tok of tokens) {
+    const low = tok.toLowerCase();
+    if (hideTokens.has(low)) {
+      showForwardedTag = false;
+      hasExplicitForwardFlag = true;
+    } else if (showTokens.has(low)) {
+      showForwardedTag = true;
+      hasExplicitForwardFlag = true;
+    } else if (carouselTokens.has(low)) {
+      cardLayout = 'carousel';
+    } else if (albumTokens.has(low)) {
+      cardLayout = 'album';
+    } else {
+      kept.push(tok);
+    }
+  }
+
+  // Clean up dangling leading/trailing pipes after removing flags
+  const cleanArg = kept.join(' ').replace(/^\|\s*|\s*\|$/g, '').trim();
+  return { cleanArg, showForwardedTag, hasExplicitForwardFlag, cardLayout };
+}
+
+function buildChannelContextInfo(
+  channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
+  showForwardedTag: boolean = true
+): any {
+  const hasValidNumericJid = !!(channelInfo && channelInfo.newsletterJid && isNumericNewsletterJid(channelInfo.newsletterJid));
+  const ctx: any = {};
+  if (showForwardedTag) {
+    ctx.isForwarded = true;
+    ctx.forwardingScore = 1;
+  } else {
+    ctx.isForwarded = false;
+  }
+  if (hasValidNumericJid) {
+    ctx.forwardedNewsletterMessageInfo = {
+      newsletterJid: channelInfo!.newsletterJid.trim(),
+      newsletterName: channelInfo!.newsletterName || 'WhatsApp Channel',
+      serverMessageId: Number(channelInfo!.serverMessageId) || 1
+    };
+  }
+  return ctx;
+}
+
+function getUserShareMediaDir(username: string): string {
+  const dir = path.join(process.cwd(), 'share_media', username);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function saveShareMediaUpload(
+  username: string,
+  base64OrDataUrl: string,
+  fileName?: string,
+  mimeType?: string
+): { localFile: string; mimeType: string; fileName: string; mediaType: 'image' | 'video' | 'document' | 'audio' } {
+  let detectedMime = mimeType || 'application/octet-stream';
+  let rawBase64 = base64OrDataUrl;
+  const dataUrlMatch = base64OrDataUrl.match(/^data:([^;]+);base64,(.*)$/s);
+  if (dataUrlMatch) {
+    detectedMime = mimeType || dataUrlMatch[1] || detectedMime;
+    rawBase64 = dataUrlMatch[2];
+  }
+  const buffer = Buffer.from(rawBase64, 'base64');
+  const safeBase = (fileName || 'media').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const extFromName = path.extname(safeBase);
+  const fallbackExt = detectedMime.startsWith('image/')
+    ? '.jpg'
+    : detectedMime.startsWith('video/')
+      ? '.mp4'
+      : detectedMime.startsWith('audio/')
+        ? '.mp3'
+        : detectedMime.includes('pdf')
+          ? '.pdf'
+          : '.bin';
+  const finalExt = extFromName || fallbackExt;
+  const baseNoExt = extFromName ? safeBase.slice(0, -extFromName.length) : safeBase;
+  const uniqueFile = `sm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${baseNoExt.substring(0, 30)}${finalExt}`;
+  const absPath = path.join(getUserShareMediaDir(username), uniqueFile);
+  fs.writeFileSync(absPath, buffer);
+
+  let mediaType: 'image' | 'video' | 'document' | 'audio' = 'document';
+  if (detectedMime.startsWith('image/')) mediaType = 'image';
+  else if (detectedMime.startsWith('video/')) mediaType = 'video';
+  else if (detectedMime.startsWith('audio/')) mediaType = 'audio';
+
+  return {
+    localFile: uniqueFile,
+    mimeType: detectedMime,
+    fileName: fileName || uniqueFile,
+    mediaType
+  };
+}
+
+function cleanupShareMediaFiles(username: string, share: CapturedShare, allShares: CapturedShare[]) {
+  if (!share?.extraMedia || share.extraMedia.length === 0) return;
+  const stillReferenced = new Set<string>();
+  for (const s of allShares) {
+    if (s.id === share.id) continue;
+    for (const m of (s.extraMedia || [])) {
+      if (m.localFile) stillReferenced.add(m.localFile);
+    }
+  }
+  const mediaDir = getUserShareMediaDir(username);
+  for (const m of share.extraMedia) {
+    if (m.localFile && !stillReferenced.has(m.localFile)) {
+      const target = path.join(mediaDir, path.basename(m.localFile));
+      try {
+        if (fs.existsSync(target)) fs.unlinkSync(target);
+      } catch {}
+    }
+  }
+}
+
+// Helper to format/transform messages for native forwarding with preserved media, native "View Channel" header tag, optional Forwarded badge, and HIDDEN caption link
 function prepareForwardedMessage(
   originalQuotedMessage: any,
   channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
-  options?: { channelLink?: string; appendChannelLink?: boolean }
+  options?: { channelLink?: string; appendChannelLink?: boolean; showForwardedTag?: boolean }
 ) {
   if (!originalQuotedMessage) return originalQuotedMessage;
   
@@ -3115,24 +3274,37 @@ function prepareForwardedMessage(
   let quotedMessage = JSON.parse(JSON.stringify(originalQuotedMessage));
   quotedMessage = unwrapQuotedMessage(quotedMessage);
 
-  const hasValidNumericJid = !!(channelInfo && channelInfo.newsletterJid && isNumericNewsletterJid(channelInfo.newsletterJid));
-  const newsletterContext = hasValidNumericJid ? {
-    forwardedNewsletterMessageInfo: {
-      newsletterJid: channelInfo!.newsletterJid.trim(),
-      newsletterName: channelInfo!.newsletterName || 'WhatsApp Channel',
-      serverMessageId: Number(channelInfo!.serverMessageId) || 1
-    }
-  } : {};
-
-  const forwardingContext = {
-    isForwarded: true,
-    forwardingScore: 1,
-    ...newsletterContext
-  };
+  const shouldShowForwarded = options?.showForwardedTag !== false;
+  const forwardingContext = buildChannelContextInfo(channelInfo, shouldShowForwarded);
+  const newsletterContext = forwardingContext.forwardedNewsletterMessageInfo
+    ? { forwardedNewsletterMessageInfo: forwardingContext.forwardedNewsletterMessageInfo }
+    : {};
 
   const effectiveLink = options?.channelLink || channelInfo?.inviteLink || channelInfo?.channelLink;
   // Link is kept HIDDEN from captions/text by default (so only the native WhatsApp "View Channel" pill appears)
   const shouldAppendLink = options?.appendChannelLink === true && !!effectiveLink;
+
+  const mergeContext = (existingCtx: any) => {
+    const baseCtx = { ...(existingCtx || {}) };
+    const existingNewsletter = baseCtx.forwardedNewsletterMessageInfo;
+    if (!shouldShowForwarded) {
+      delete baseCtx.isForwarded;
+      delete baseCtx.forwardingScore;
+      delete baseCtx.forwardOrigin;
+    }
+    const merged = {
+      ...baseCtx,
+      ...forwardingContext,
+      ...(newsletterContext.forwardedNewsletterMessageInfo ? newsletterContext :
+          (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
+    };
+    if (!shouldShowForwarded) {
+      merged.isForwarded = false;
+      delete merged.forwardingScore;
+      delete merged.forwardOrigin;
+    }
+    return merged;
+  };
 
   if (typeof quotedMessage === 'string') {
     const textContent = shouldAppendLink 
@@ -3184,13 +3356,7 @@ function prepareForwardedMessage(
     if (quotedMessage[key]) {
       const inner = quotedMessage[key];
       if (inner && typeof inner === 'object') {
-        const existingNewsletter = inner.contextInfo?.forwardedNewsletterMessageInfo;
-        inner.contextInfo = {
-          ...(inner.contextInfo || {}),
-          ...forwardingContext,
-          ...(newsletterContext.forwardedNewsletterMessageInfo ? newsletterContext :
-              (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
-        };
+        inner.contextInfo = mergeContext(inner.contextInfo);
 
         if (shouldAppendLink) {
           if (key === 'extendedTextMessage' && inner.text) {
@@ -3220,13 +3386,7 @@ function prepareForwardedMessage(
   if (anyMessageKey) {
     const inner = quotedMessage[anyMessageKey];
     if (inner && typeof inner === 'object') {
-      const existingNewsletter = inner.contextInfo?.forwardedNewsletterMessageInfo;
-      inner.contextInfo = {
-        ...(inner.contextInfo || {}),
-        ...forwardingContext,
-        ...(newsletterContext.forwardedNewsletterMessageInfo ? newsletterContext :
-            (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
-      };
+      inner.contextInfo = mergeContext(inner.contextInfo);
 
       if (shouldAppendLink && inner.caption) {
         inner.caption = appendChannelLinkToText(inner.caption, effectiveLink!);
@@ -3237,8 +3397,346 @@ function prepareForwardedMessage(
     return quotedMessage;
   }
 
-  
   return quotedMessage;
+}
+
+interface PreparedMediaEntry {
+  mediaType: 'image' | 'video' | 'document' | 'audio';
+  protoContent: any;
+  caption?: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
+// Prepares all media items inside a CapturedShare ONCE per broadcast so group batches don't re-upload files repeatedly
+async function prepareShareMediaBundle(
+  sock: any,
+  username: string,
+  share: CapturedShare
+): Promise<{ items: PreparedMediaEntry[]; mainCaption: string }> {
+  const items: PreparedMediaEntry[] = [];
+  let mainCaption = share.caption || extractCaptionOrText(share.quotedMessage) || '';
+
+  // 1. Check primary quotedMessage if it's a media item
+  if (share.quotedMessage && typeof share.quotedMessage === 'object') {
+    const unwrapped = unwrapQuotedMessage(JSON.parse(JSON.stringify(share.quotedMessage)));
+    if (unwrapped.imageMessage) {
+      items.push({
+        mediaType: 'image',
+        protoContent: { imageMessage: unwrapped.imageMessage },
+        caption: unwrapped.imageMessage.caption || mainCaption
+      });
+    } else if (unwrapped.videoMessage) {
+      items.push({
+        mediaType: 'video',
+        protoContent: { videoMessage: unwrapped.videoMessage },
+        caption: unwrapped.videoMessage.caption || mainCaption
+      });
+    } else if (unwrapped.documentMessage) {
+      items.push({
+        mediaType: 'document',
+        protoContent: { documentMessage: unwrapped.documentMessage },
+        caption: unwrapped.documentMessage.caption || mainCaption,
+        fileName: unwrapped.documentMessage.fileName,
+        mimeType: unwrapped.documentMessage.mimetype
+      });
+    } else if (unwrapped.audioMessage) {
+      items.push({
+        mediaType: 'audio',
+        protoContent: { audioMessage: unwrapped.audioMessage }
+      });
+    }
+  }
+
+  // 2. Append any extraMedia items (uploaded files, URLs, or captured WhatsApp media)
+  const mediaDir = getUserShareMediaDir(username);
+  for (const extra of (share.extraMedia || [])) {
+    try {
+      if (extra.quotedMessage) {
+        const unwrappedExtra = unwrapQuotedMessage(JSON.parse(JSON.stringify(extra.quotedMessage)));
+        if (unwrappedExtra.imageMessage) {
+          items.push({ mediaType: 'image', protoContent: { imageMessage: unwrappedExtra.imageMessage }, caption: extra.caption || unwrappedExtra.imageMessage.caption });
+          continue;
+        }
+        if (unwrappedExtra.videoMessage) {
+          items.push({ mediaType: 'video', protoContent: { videoMessage: unwrappedExtra.videoMessage }, caption: extra.caption || unwrappedExtra.videoMessage.caption });
+          continue;
+        }
+        if (unwrappedExtra.documentMessage) {
+          items.push({
+            mediaType: 'document',
+            protoContent: { documentMessage: unwrappedExtra.documentMessage },
+            caption: extra.caption || unwrappedExtra.documentMessage.caption,
+            fileName: extra.fileName || unwrappedExtra.documentMessage.fileName,
+            mimeType: extra.mimeType || unwrappedExtra.documentMessage.mimetype
+          });
+          continue;
+        }
+        if (unwrappedExtra.audioMessage) {
+          items.push({ mediaType: 'audio', protoContent: { audioMessage: unwrappedExtra.audioMessage } });
+          continue;
+        }
+      }
+
+      let sourceInput: Buffer | { url: string } | null = null;
+      if (extra.localFile) {
+        const absFile = path.join(mediaDir, path.basename(extra.localFile));
+        if (fs.existsSync(absFile)) {
+          sourceInput = fs.readFileSync(absFile);
+        }
+      } else if (extra.url) {
+        sourceInput = { url: extra.url };
+      }
+
+      if (!sourceInput) continue;
+
+      let mediaPayload: any = {};
+      if (extra.mediaType === 'image') {
+        mediaPayload = { image: sourceInput };
+      } else if (extra.mediaType === 'video') {
+        mediaPayload = { video: sourceInput };
+      } else if (extra.mediaType === 'audio') {
+        mediaPayload = { audio: sourceInput, mimetype: extra.mimeType || 'audio/mp4' };
+      } else {
+        mediaPayload = {
+          document: sourceInput,
+          mimetype: extra.mimeType || 'application/octet-stream',
+          fileName: extra.fileName || 'document'
+        };
+      }
+
+      const prepared = await prepareWAMessageMedia(mediaPayload, { upload: sock.waUploadToServer });
+      items.push({
+        mediaType: extra.mediaType,
+        protoContent: prepared,
+        caption: extra.caption,
+        fileName: extra.fileName,
+        mimeType: extra.mimeType
+      });
+    } catch (prepErr: any) {
+      console.warn(`[MULTI-MEDIA SHARE] Failed preparing extra media ${extra.id}:`, prepErr?.message);
+    }
+  }
+
+  return { items, mainCaption };
+}
+
+// Dispatches single or multiple media inside the same WhatsApp Channel Card (Album Grid or Swipeable Carousel)
+async function sendMultiMediaChannelCard(
+  sock: any,
+  targetJid: string,
+  bundle: { items: PreparedMediaEntry[]; mainCaption: string },
+  channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
+  options?: { channelLink?: string; appendChannelLink?: boolean; showForwardedTag?: boolean; cardLayout?: 'album' | 'carousel' }
+): Promise<void> {
+  const shouldShowForwarded = options?.showForwardedTag !== false;
+  const effectiveLink = options?.channelLink || channelInfo?.inviteLink || channelInfo?.channelLink;
+  const shouldAppendLink = options?.appendChannelLink === true && !!effectiveLink;
+  const channelCtx = buildChannelContextInfo(channelInfo, shouldShowForwarded);
+
+  const formatCaption = (rawCap: string | undefined, forceIncludeLinkPrompt: boolean) => {
+    const base = rawCap || '';
+    if (shouldAppendLink && effectiveLink) {
+      if (base || forceIncludeLinkPrompt) {
+        return appendChannelLinkToText(base, effectiveLink);
+      }
+    }
+    return cleanChannelLinkFromText(base);
+  };
+
+  const { items, mainCaption } = bundle;
+  if (items.length === 0) return;
+
+  // Single media item -> use standard direct channel-tagged dispatch
+  if (items.length === 1) {
+    const single = items[0];
+    const cloned = JSON.parse(JSON.stringify(single.protoContent));
+    const key = Object.keys(cloned)[0];
+    if (key && cloned[key] && typeof cloned[key] === 'object') {
+      const cap = formatCaption(single.caption || mainCaption, true);
+      if (cap) cloned[key].caption = cap;
+    }
+    const preparedSingle = prepareForwardedMessage(cloned, channelInfo, {
+      channelLink: effectiveLink,
+      appendChannelLink: shouldAppendLink,
+      showForwardedTag: shouldShowForwarded
+    });
+    await forwardMessagePayloadWithChannel(sock, targetJid, preparedSingle);
+    return;
+  }
+
+  const albumMedia = items.filter(i => i.mediaType === 'image' || i.mediaType === 'video');
+  const otherMedia = items.filter(i => i.mediaType !== 'image' && i.mediaType !== 'video');
+  const carouselEligible = items.filter(i => i.mediaType === 'image' || i.mediaType === 'video' || i.mediaType === 'document');
+
+  const preferCarousel =
+    options?.cardLayout === 'carousel' ||
+    (albumMedia.length < 2 && carouselEligible.length >= 2);
+
+  if (preferCarousel && carouselEligible.length >= 2) {
+    try {
+      const slides = carouselEligible.map((item, idx) => {
+        const cloned = JSON.parse(JSON.stringify(item.protoContent));
+        if (cloned.imageMessage) {
+          cloned.imageMessage.viewOnce = true;
+        }
+        if (cloned.videoMessage) {
+          cloned.videoMessage.viewOnce = true;
+          cloned.videoMessage.gifPlayback = false;
+        }
+        const header = proto.Message.InteractiveMessage.Header.create({
+          title: item.fileName && item.mediaType === 'document' ? item.fileName : '',
+          hasMediaAttachment: !!(cloned.imageMessage || cloned.videoMessage || cloned.documentMessage),
+          ...cloned
+        });
+        const slideBodyText = item.caption || (idx === 0 ? formatCaption(mainCaption, false) : '') || ' ';
+        const footerText = channelInfo?.newsletterName ? `📢 ${channelInfo.newsletterName}` : '';
+        const buttons = effectiveLink
+          ? [
+              {
+                name: 'cta_url',
+                buttonParamsJson: JSON.stringify({
+                  display_text: channelInfo?.newsletterName ? `View ${channelInfo.newsletterName}` : 'View Channel',
+                  url: effectiveLink,
+                  merchant_url: effectiveLink
+                })
+              }
+            ]
+          : [];
+        return proto.Message.InteractiveMessage.create({
+          header,
+          body: proto.Message.InteractiveMessage.Body.create({ text: slideBodyText }),
+          footer: proto.Message.InteractiveMessage.Footer.create({ text: footerText }),
+          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({ buttons })
+        });
+      });
+
+      const bodyText = formatCaption(mainCaption, !channelInfo?.newsletterName);
+      const interactivePayload: any = {
+        interactiveMessage: {
+          carouselMessage: proto.Message.InteractiveMessage.CarouselMessage.create({ cards: slides }),
+          body: proto.Message.InteractiveMessage.Body.create({ text: bodyText || ' ' }),
+          header: proto.Message.InteractiveMessage.Header.create({
+            title: channelInfo?.newsletterName || '',
+            hasMediaAttachment: false
+          }),
+          footer: proto.Message.InteractiveMessage.Footer.create({
+            text: channelInfo?.newsletterName ? `WhatsApp Channel • ${channelInfo.newsletterName}` : ''
+          }),
+          contextInfo: channelCtx
+        }
+      };
+
+      const carouselMsg = generateWAMessageFromContent(targetJid, interactivePayload, {
+        userJid: sock.user?.id,
+        messageId: `4NY4W3B${crypto.randomBytes(16).toString('hex').toUpperCase()}`
+      });
+      await sock.relayMessage(targetJid, carouselMsg.message, { messageId: carouselMsg.key.id });
+
+      // Send any remaining audio items separately if mixed with carousel
+      const audioItems = items.filter(i => i.mediaType === 'audio');
+      for (const aud of audioItems) {
+        const preparedAud = prepareForwardedMessage(aud.protoContent, channelInfo, {
+          channelLink: effectiveLink,
+          appendChannelLink: shouldAppendLink,
+          showForwardedTag: shouldShowForwarded
+        });
+        await new Promise(r => setTimeout(r, 350));
+        await forwardMessagePayloadWithChannel(sock, targetJid, preparedAud);
+      }
+      return;
+    } catch (carouselErr: any) {
+      console.warn(`[MULTI-MEDIA] Carousel send failed for ${targetJid}: ${carouselErr?.message}. Falling back to Album/Media dispatch...`);
+    }
+  }
+
+  // Native WhatsApp Album Card (groups 2+ images & videos into a single multi-media card with channel attribution)
+  if (albumMedia.length >= 2) {
+    const albumMsg = generateWAMessageFromContent(targetJid, {
+      albumMessage: {
+        expectedImageCount: albumMedia.filter(m => m.mediaType === 'image').length,
+        expectedVideoCount: albumMedia.filter(m => m.mediaType === 'video').length,
+        contextInfo: channelCtx
+      }
+    }, { userJid: sock.user?.id });
+
+    await sock.relayMessage(targetJid, albumMsg.message, { messageId: albumMsg.key.id });
+
+    for (let idx = 0; idx < albumMedia.length; idx++) {
+      const item = albumMedia[idx];
+      const cloned = JSON.parse(JSON.stringify(item.protoContent));
+      const mediaKey = item.mediaType === 'image' ? 'imageMessage' : 'videoMessage';
+      const inner = cloned[mediaKey];
+      if (inner && typeof inner === 'object') {
+        inner.contextInfo = { ...channelCtx };
+        if (!shouldShowForwarded) {
+          inner.contextInfo.isForwarded = false;
+          delete inner.contextInfo.forwardingScore;
+          delete inner.contextInfo.forwardOrigin;
+        }
+        if (idx === 0) {
+          const unifiedCaption = formatCaption(mainCaption || item.caption, false);
+          if (unifiedCaption) {
+            inner.caption = unifiedCaption;
+          } else {
+            delete inner.caption;
+          }
+        } else {
+          const itemCap = item.caption ? cleanChannelLinkFromText(item.caption) : '';
+          if (itemCap && itemCap !== mainCaption) {
+            inner.caption = itemCap;
+          } else {
+            delete inner.caption;
+          }
+        }
+      }
+
+      const childMsg = generateWAMessageFromContent(targetJid, cloned, {
+        userJid: sock.user?.id
+      });
+      if (childMsg.message) {
+        childMsg.message.messageContextInfo = {
+          ...(childMsg.message.messageContextInfo || {}),
+          messageSecret: crypto.randomBytes(32),
+          messageAssociation: {
+            associationType: 1,
+            parentMessageKey: albumMsg.key
+          }
+        };
+      }
+      await new Promise(r => setTimeout(r, 350));
+      await sock.relayMessage(targetJid, childMsg.message, { messageId: childMsg.key.id });
+    }
+
+    // Dispatch any extra documents/audio items attached to the same share with identical channel & forward settings
+    for (const extraItem of otherMedia) {
+      const preparedExtra = prepareForwardedMessage(extraItem.protoContent, channelInfo, {
+        channelLink: effectiveLink,
+        appendChannelLink: shouldAppendLink,
+        showForwardedTag: shouldShowForwarded
+      });
+      await new Promise(r => setTimeout(r, 350));
+      await forwardMessagePayloadWithChannel(sock, targetJid, preparedExtra);
+    }
+    return;
+  }
+
+  // Fallback for mixed non-album items (e.g. 1 image + 1 audio): send sequentially with identical channel & forward settings
+  for (let idx = 0; idx < items.length; idx++) {
+    const item = items[idx];
+    const cloned = JSON.parse(JSON.stringify(item.protoContent));
+    const key = Object.keys(cloned)[0];
+    if (idx === 0 && key && cloned[key] && typeof cloned[key] === 'object' && !cloned[key].caption && mainCaption) {
+      cloned[key].caption = mainCaption;
+    }
+    const prepared = prepareForwardedMessage(cloned, channelInfo, {
+      channelLink: effectiveLink,
+      appendChannelLink: idx === 0 && shouldAppendLink,
+      showForwardedTag: shouldShowForwarded
+    });
+    if (idx > 0) await new Promise(r => setTimeout(r, 350));
+    await forwardMessagePayloadWithChannel(sock, targetJid, prepared);
+  }
 }
 
 // Dispatches message payload directly preserving Protobuf contextInfo (forwardedNewsletterMessageInfo) and media metadata
@@ -3959,6 +4457,37 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
             }
           }
           
+          // Handle .sharetag / .forwardtag command to toggle or check Forwarded tag visibility directly in WhatsApp chat
+          const matchShareTagCmd = lowerRawText.match(/^(?:\.sharetag|\.forwardtag)(?:\s+(on|off|true|false|show|hide))?$/i);
+          if (matchShareTagCmd && from) {
+            try {
+              const currentSettings = loadUserSettings(username);
+              const arg = matchShareTagCmd[1]?.toLowerCase();
+              if (!arg) {
+                const isVis = currentSettings.showForwardedTagOnShare !== false;
+                await sockInstance.sendMessage(from, {
+                  text: `🏷️ *Channel Share "Forwarded" Tag Setting*\n\n` +
+                    `Current Status: *${isVis ? 'VISIBLE ("Forwarded" badge shown)' : 'HIDDEN (Clean card without "Forwarded" badge)'}*\n\n` +
+                    `• Send *.sharetag off* to hide the "Forwarded" tag\n` +
+                    `• Send *.sharetag on* to show the "Forwarded" tag\n` +
+                    `• Or add *noforward* / *forwarded* to *.share* or *.sharenow*`
+                }, { quoted: msg });
+              } else {
+                const enableTag = ['on', 'true', 'show'].includes(arg);
+                saveUserSettings(username, { showForwardedTagOnShare: enableTag });
+                await sockInstance.sendMessage(from, {
+                  text: `✅ *Updated Channel Share Setting!*\n\n` +
+                    `🏷️ *Forwarded Tag:* ${enableTag ? 'VISIBLE ("Forwarded" badge will appear)' : 'HIDDEN (Clean channel card without "Forwarded" tag)'}\n\n` +
+                    `This applies automatically to future *.share* and *.sharenow* commands (unless overridden with *noforward* or *forwarded*).`
+                }, { quoted: msg });
+                addLog(username, `🏷️ [.SHARETAG] Updated showForwardedTagOnShare = ${enableTag} via chat command from ${from}`, 'success');
+              }
+            } catch (err: any) {
+              console.error('[SHARETAG] Error updating setting:', err);
+            }
+            continue;
+          }
+
           const contextInfo = extractMsgContextInfo(msg.message);
           
           const rawQuotedMessage = contextInfo?.quotedMessage;
@@ -3975,7 +4504,10 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
               // Extract channel info if message originates or forwards from a channel, or apply user default channel tag
               const preDetected = extractNewsletterInfo(contextInfo, rawQuotedMessage, from);
-              const sharenowArg = rawText.replace(/^\.sharenow\s*/i, '').trim();
+              const rawSharenowArg = rawText.replace(/^\.sharenow\s*/i, '').trim();
+              const parsedFlags = parseShareCommandFlags(rawSharenowArg, settings.showForwardedTagOnShare !== false);
+              const sharenowArg = parsedFlags.cleanArg;
+              const showForwardedTag = parsedFlags.showForwardedTag;
 
               const resolvedChannel = await resolveWhatsAppChannel(
                 sockInstance,
@@ -3994,12 +4526,12 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
               if (resolvedChannel) {
                 if (resolvedChannel.isVerified) {
-                  addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Preserving Verified Channel Tag: "${resolvedChannel.newsletterName}" (${resolvedChannel.newsletterJid})${effectiveChannelLink ? ` | Link: ${effectiveChannelLink}` : ''}`, 'info');
+                  addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Preserving Verified Channel Tag: "${resolvedChannel.newsletterName}" (${resolvedChannel.newsletterJid}) | Forwarded Tag: ${showForwardedTag ? 'ON' : 'OFF'}${effectiveChannelLink ? ` | Link: ${effectiveChannelLink}` : ''}`, 'info');
                 } else {
-                  addLog(username, `⚠️ [.SHARENOW] Triggered with custom channel "${resolvedChannel.newsletterName}". ${resolvedChannel.warning || ''}`, 'info');
+                  addLog(username, `⚠️ [.SHARENOW] Triggered with custom channel "${resolvedChannel.newsletterName}" | Forwarded Tag: ${showForwardedTag ? 'ON' : 'OFF'}. ${resolvedChannel.warning || ''}`, 'info');
                 }
               } else {
-                addLog(username, `🚀 [.SHARENOW] Triggered by ${from}. Querying joined groups...${effectiveChannelLink ? ` [Using Default Channel Link: ${effectiveChannelLink}]` : ''}`, 'info');
+                addLog(username, `🚀 [.SHARENOW] Triggered by ${from} | Forwarded Tag: ${showForwardedTag ? 'ON' : 'OFF'}. Querying joined groups...${effectiveChannelLink ? ` [Using Default Channel Link: ${effectiveChannelLink}]` : ''}`, 'info');
               }
 
               const channelPillText = resolvedChannel
@@ -4009,9 +4541,10 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 : '';
 
               const linkPillText = effectiveChannelLink ? `\n🔗 *Channel Link:* ${effectiveChannelLink}` : '';
+              const forwardBadgeText = `\n🏷️ *Forwarded Tag:* ${showForwardedTag ? 'Visible (Forwarded)' : 'Hidden (No Forwarded Tag)'}`;
 
               await sockInstance.sendMessage(from, { 
-                text: `🚀 *.sharenow Command Triggered!*\nFetching all joined WhatsApp groups for session...${channelPillText}${linkPillText}` 
+                text: `🚀 *.sharenow Command Triggered!*\nFetching all joined WhatsApp groups for session...${channelPillText}${linkPillText}${forwardBadgeText}` 
               }, { quoted: msg });
 
               // Fetch all participating groups from WhatsApp socket
@@ -4044,6 +4577,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 text: `📢 *.sharenow Starting Group Broadcast!*\n\n` +
                       (resolvedChannel && resolvedChannel.isVerified ? `🏷️ *Verified Channel Tag:* ${resolvedChannel.newsletterName} (${resolvedChannel.newsletterJid})\n` : (resolvedChannel ? `🏷️ *Channel:* ${resolvedChannel.newsletterName}\n` : '')) +
                       (settings.appendChannelLinkToShare && effectiveChannelLink ? `🔗 *Clickable Channel Link:* ${effectiveChannelLink}\n` : (effectiveChannelLink ? `🏷️ *View Channel Tag:* Active on message header (link hidden from caption)\n` : '')) +
+                      `📎 *Forwarded Badge:* ${showForwardedTag ? 'Visible' : 'Hidden (Clean)'}\n` +
                       `🎯 *Target Groups:* ${eligibleGroups.length} (Skipped ${bannedCount} banned groups)\n` +
                       `📦 *Batch Config:* ${batchSize} groups/batch with ${pauseSec}s pause\n\n` +
                       `Sending messages with all media, formatting & native View Channel tag now...` 
@@ -4051,7 +4585,8 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
               const preparedMsgPayload = prepareForwardedMessage(quotedMessage, resolvedChannel, {
                 channelLink: effectiveChannelLink,
-                appendChannelLink: !!settings.appendChannelLinkToShare
+                appendChannelLink: !!settings.appendChannelLinkToShare,
+                showForwardedTag
               });
 
               let successCount = 0;
@@ -4070,7 +4605,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                     await forwardMessagePayloadWithChannel(sockInstance, targetJid, preparedMsgPayload);
 
                     successCount++;
-                    addLog(username, `✅ [.SHARENOW] Forwarded message to ${targetGroup.subject || targetJid}${resolvedChannel ? ` [Channel Tag: ${resolvedChannel.newsletterName}]` : ''}${effectiveChannelLink ? ` [Link: ${effectiveChannelLink}]` : ''}`, 'success');
+                    addLog(username, `✅ [.SHARENOW] Forwarded message to ${targetGroup.subject || targetJid}${resolvedChannel ? ` [Channel Tag: ${resolvedChannel.newsletterName}]` : ''} [Forwarded Tag: ${showForwardedTag ? 'ON' : 'OFF'}]`, 'success');
                   } catch (err: any) {
                     failCount++;
                     console.error(`[.SHARENOW] Error forwarding to ${targetJid}:`, err);
@@ -4091,7 +4626,8 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 text: `🎉 *.sharenow Broadcast Complete!* ✅\n\n` +
                       `✅ *Successfully Sent:* ${successCount} groups\n` +
                       `❌ *Failed:* ${failCount}\n` +
-                      `🚫 *Banned Groups Skipped:* ${bannedCount}` +
+                      `🚫 *Banned Groups Skipped:* ${bannedCount}\n` +
+                      `🏷️ *Forwarded Tag:* ${showForwardedTag ? 'Visible' : 'Hidden (Clean)'}` +
                       (resolvedChannel ? `\n📢 *Channel Tag Appended:* ${resolvedChannel.newsletterName}${resolvedChannel.isVerified ? ' (Verified)' : ''}` : '') +
                       (effectiveChannelLink ? `\n🔗 *Channel Link Included:* ${effectiveChannelLink}` : '')
               }, { quoted: msg });
@@ -4110,10 +4646,64 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               const settings = loadUserSettings(username);
               const quotedSender = contextInfo.participant || contextInfo.remoteJid || '';
               const quotedMessageId = contextInfo.stanzaId || '';
-              
-              // Extract channel info if message originates or forwards from a channel, or apply user default channel tag
+              const rawShareArg = rawText.replace(/^\.share\s*/i, '').trim();
+
+              // Check if user wants to append quoted media into an existing/latest share card: ".share add" / ".share +" / ".share append"
+              const addMatch = rawShareArg.match(/^(?:add|append|\+)(?:\s+(.*))?$/i);
+              if (addMatch && shares.length > 0) {
+                const remainder = (addMatch[1] || '').trim();
+                const parsedFlags = parseShareCommandFlags(remainder, settings.showForwardedTagOnShare !== false);
+                const detectedType = detectMediaType(quotedMessage);
+
+                if (detectedType === 'image' || detectedType === 'video' || detectedType === 'document' || detectedType === 'audio') {
+                  let targetShare = parsedFlags.cleanArg
+                    ? shares.find(s => s.id === parsedFlags.cleanArg)
+                    : undefined;
+                  if (!targetShare) {
+                    targetShare = shares[shares.length - 1];
+                  }
+
+                  const newExtraItem: ShareMediaItem = {
+                    id: `sm_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                    mediaType: detectedType,
+                    caption: extractCaptionOrText(quotedMessage) || undefined,
+                    fileName: quotedMessage?.documentMessage?.fileName || undefined,
+                    mimeType: quotedMessage?.documentMessage?.mimetype || quotedMessage?.imageMessage?.mimetype || quotedMessage?.videoMessage?.mimetype || undefined,
+                    quotedMessage,
+                    addedAt: new Date().toISOString()
+                  };
+
+                  targetShare.extraMedia = targetShare.extraMedia || [];
+                  targetShare.extraMedia.push(newExtraItem);
+                  if (parsedFlags.hasExplicitForwardFlag) {
+                    targetShare.showForwardedTag = parsedFlags.showForwardedTag;
+                  }
+                  if (parsedFlags.cardLayout) {
+                    targetShare.cardLayout = parsedFlags.cardLayout;
+                  }
+                  saveUserShares(username, shares);
+
+                  const primaryIsMedia = ['image', 'video', 'document', 'audio'].includes(targetShare.mediaType || '');
+                  const totalMediaCount = (primaryIsMedia ? 1 : 0) + targetShare.extraMedia.length;
+
+                  addLog(username, `➕ [SHARE ADD] Added ${detectedType.toUpperCase()} to share "${targetShare.id}" (Total media in card: ${totalMediaCount}).`, 'success');
+                  await simulateHumanTyping(sockInstance, from, targetShare.displayText);
+                  await sockInstance.sendMessage(from, {
+                    text: `➕ *Added ${detectedType.toUpperCase()} to Channel Card!*\n\n` +
+                      `🆔 *Share Card:* ${targetShare.id}\n` +
+                      `🖼️ *Total Media Inside Card:* ${totalMediaCount}\n` +
+                      `🏷️ *Forwarded Tag:* ${(targetShare.showForwardedTag !== undefined ? targetShare.showForwardedTag : settings.showForwardedTagOnShare !== false) ? 'Visible' : 'Hidden (Clean)'}\n\n` +
+                      `Reply *.share add* to another photo/video to keep adding, or open *Channel & Shares Studio* on the dashboard to forward this multi-media card!`
+                  }, { quoted: msg });
+                  continue;
+                }
+              }
+
+              // Standard .share capture
               const preDetected = extractNewsletterInfo(contextInfo, rawQuotedMessage, from);
-              const shareArg = rawText.replace(/^\.share\s*/i, '').trim();
+              const parsedFlags = parseShareCommandFlags(rawShareArg, settings.showForwardedTagOnShare !== false);
+              const shareArg = parsedFlags.cleanArg;
+              const showForwardedTag = parsedFlags.showForwardedTag;
 
               const resolvedChannel = await resolveWhatsAppChannel(
                 sockInstance,
@@ -4137,6 +4727,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 displayText: getMessagePreview(quotedMessage),
                 mediaType: detectMediaType(quotedMessage),
                 caption: extractCaptionOrText(quotedMessage),
+                cardLayout: parsedFlags.cardLayout || 'album',
                 channelInfo: resolvedChannel ? {
                   newsletterJid: resolvedChannel.newsletterJid,
                   newsletterName: resolvedChannel.newsletterName,
@@ -4150,6 +4741,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 } : undefined),
                 channelLink: effectiveChannelLink,
                 appendChannelLink: false,
+                showForwardedTag,
                 status: 'pending',
                 forwardedTo: []
               };
@@ -4157,8 +4749,11 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               shares.push(newShare);
               saveUserShares(username, shares);
               
-              addLog(username, `📥 [SHARE] Captured shared message from ${from}. Type: ${newShare.mediaType}${resolvedChannel ? ` | Channel Tag: "${resolvedChannel.newsletterName}"${resolvedChannel.isVerified ? ' (Verified)' : ' (Unverified)'}` : ''}${effectiveChannelLink ? ` | Channel Link: ${effectiveChannelLink}` : ''}. Preview: "${newShare.displayText}"`, 'success');
+              addLog(username, `📥 [SHARE] Captured shared message from ${from}. Type: ${newShare.mediaType} | Forwarded Tag: ${showForwardedTag ? 'ON' : 'OFF'}${resolvedChannel ? ` | Channel Tag: "${resolvedChannel.newsletterName}"${resolvedChannel.isVerified ? ' (Verified)' : ' (Unverified)'}` : ''}${effectiveChannelLink ? ` | Channel Link: ${effectiveChannelLink}` : ''}. Preview: "${newShare.displayText}"`, 'success');
               
+              const forwardTagLine = `🏷️ *Forwarded Tag:* ${showForwardedTag ? 'Visible (Forwarded)' : 'Hidden (No Forwarded Tag)'}\n`;
+              const tipLine = `\n💡 _Tips: Reply *.share add* on more media to bundle them in this card, or use *noforward* / *.sharetag off* to hide the Forwarded tag._`;
+
               // Send confirmation reply back
               let confirmTxt = '';
               if (resolvedChannel) {
@@ -4167,23 +4762,29 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                     `📢 *Channel Tag:* ${resolvedChannel.newsletterName}\n` +
                     `🆔 *Channel ID:* ${resolvedChannel.newsletterJid}\n` +
                     (effectiveChannelLink ? `🔗 *Channel Link:* ${effectiveChannelLink}\n` : '') +
+                    forwardTagLine +
                     `📦 *Media Type:* ${newShare.mediaType?.toUpperCase() || 'MESSAGE'}\n` +
                     `📝 *Preview:* "${newShare.displayText}"\n\n` +
-                    `✨ Verified Channel Tag attached! Tapping the tag or link on WhatsApp will open your official channel. You can forward it anytime via Dashboard or reply *.sharenow* to broadcast.`;
+                    `✨ Verified Channel Tag attached! You can forward via Dashboard or reply *.sharenow${showForwardedTag ? '' : ' noforward'}* to broadcast.` +
+                    tipLine;
                 } else {
                   confirmTxt = `✅ *Captured Shared Message!*\n\n` +
                     `🏷️ *Custom Channel Name:* "${resolvedChannel.newsletterName}"\n` +
                     (effectiveChannelLink ? `🔗 *Channel Link:* ${effectiveChannelLink}\n` : '') +
-                    `⚠️ *Note:* Channel is not yet linked to a verified WhatsApp JID. To make the tag clickable on WhatsApp, provide the channel link (e.g. .share ${resolvedChannel.newsletterName} | https://whatsapp.com/channel/...) or select it in Dashboard Settings.\n\n` +
+                    forwardTagLine +
+                    `⚠️ *Note:* Channel is not yet linked to a verified WhatsApp JID. Provide the channel link (e.g. .share ${resolvedChannel.newsletterName} | https://whatsapp.com/channel/...) or select it in Dashboard Settings.\n\n` +
                     `📦 *Media Type:* ${newShare.mediaType?.toUpperCase() || 'MESSAGE'}\n` +
-                    `📝 *Preview:* "${newShare.displayText}"`;
+                    `📝 *Preview:* "${newShare.displayText}"` +
+                    tipLine;
                 }
               } else {
                 confirmTxt = `✅ *Captured Shared Message!*\n\n` +
                   (effectiveChannelLink ? `🔗 *Default Channel Link:* ${effectiveChannelLink}\n` : '') +
+                  forwardTagLine +
                   `📦 *Media Type:* ${newShare.mediaType?.toUpperCase() || 'MESSAGE'}\n` +
                   `📝 *Preview:* "${newShare.displayText}"\n\n` +
-                  `Available in your dashboard panel to forward to any group (with optional channel tags & link).`;
+                  `Available in your dashboard panel to forward to any group (with optional channel tags & multi-media bundling).` +
+                  tipLine;
               }
 
               await simulateHumanTyping(sockInstance, from, newShare.displayText);
@@ -5303,6 +5904,7 @@ function getFirestoreStatusPayload() {
       defaultChannelInviteLink,
       autoAttachChannelTag,
       appendChannelLinkToShare,
+      showForwardedTagOnShare,
       autoJoinGroupsEnabled,
       autoJoinMinMembers,
       autoRetryIntervalMinutes,
@@ -5363,6 +5965,7 @@ function getFirestoreStatusPayload() {
       defaultChannelInviteLink: finalInviteLink,
       autoAttachChannelTag: autoAttachChannelTag !== undefined ? !!autoAttachChannelTag : undefined,
       appendChannelLinkToShare: appendChannelLinkToShare !== undefined ? !!appendChannelLinkToShare : undefined,
+      showForwardedTagOnShare: showForwardedTagOnShare !== undefined ? !!showForwardedTagOnShare : undefined,
       autoJoinGroupsEnabled: autoJoinGroupsEnabled !== undefined ? !!autoJoinGroupsEnabled : undefined,
       autoJoinMinMembers: typeof autoJoinMinMembers === 'number' && autoJoinMinMembers > 0 ? autoJoinMinMembers : undefined,
       autoRetryIntervalMinutes: typeof autoRetryIntervalMinutes === 'number' && autoRetryIntervalMinutes > 0 ? autoRetryIntervalMinutes : undefined,
@@ -5882,11 +6485,276 @@ function getFirestoreStatusPayload() {
     res.json({ success: true, shares: loadUserShares(req.username) });
   });
 
+  // Serve uploaded share media thumbnails/files securely
+  app.get('/api/shares/media/:filename', requireAuth, (req: any, res) => {
+    try {
+      const safeName = path.basename(decodeURIComponent(req.params.filename || ''));
+      if (!safeName) return res.status(400).json({ success: false, error: 'Invalid filename' });
+      const filePath = path.join(getUserShareMediaDir(req.username), safeName);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ success: false, error: 'Media file not found' });
+      }
+      res.sendFile(filePath);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Create a brand new Multi-Media Channel Card directly from the UI
+  app.post('/api/shares/create', requireAuth, async (req: any, res) => {
+    try {
+      const { caption, mediaItems, channelLink, channelName, channelJid, cardLayout, showForwardedTag, sessionId } = req.body;
+      const itemsList = Array.isArray(mediaItems) ? mediaItems : [];
+      if (itemsList.length === 0 && (!caption || !String(caption).trim())) {
+        return res.status(400).json({ success: false, error: 'Please add at least one media item or a caption.' });
+      }
+
+      const settings = loadUserSettings(req.username);
+      const savedMedia: ShareMediaItem[] = [];
+
+      for (const item of itemsList) {
+        if (item.dataUrl && typeof item.dataUrl === 'string') {
+          const saved = saveShareMediaUpload(req.username, item.dataUrl, item.fileName, item.mimeType);
+          savedMedia.push({
+            id: `sm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            mediaType: saved.mediaType,
+            mimeType: saved.mimeType,
+            fileName: saved.fileName,
+            caption: item.caption ? String(item.caption) : undefined,
+            localFile: saved.localFile,
+            addedAt: new Date().toISOString()
+          });
+        } else if (item.url && typeof item.url === 'string' && item.url.trim()) {
+          const cleanUrl = item.url.trim();
+          const mType: 'image' | 'video' | 'document' | 'audio' =
+            item.mediaType === 'video' || /\.(mp4|mov|webm|mkv)(\?|$)/i.test(cleanUrl)
+              ? 'video'
+              : item.mediaType === 'document' || /\.(pdf|doc|docx|zip|txt)(\?|$)/i.test(cleanUrl)
+                ? 'document'
+                : item.mediaType === 'audio' || /\.(mp3|ogg|wav|m4a)(\?|$)/i.test(cleanUrl)
+                  ? 'audio'
+                  : 'image';
+          savedMedia.push({
+            id: `sm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            mediaType: mType,
+            mimeType: item.mimeType,
+            fileName: item.fileName || path.basename(cleanUrl.split('?')[0]) || 'media',
+            caption: item.caption ? String(item.caption) : undefined,
+            url: cleanUrl,
+            addedAt: new Date().toISOString()
+          });
+        }
+      }
+
+      const sessId = sessionId || 'primary';
+      const sess = sessions.get(`${req.username}:${sessId}`);
+      const cleanLink = channelLink ? String(channelLink).trim() : settings.defaultChannelInviteLink;
+      let resolvedChannelInfo: CapturedShare['channelInfo'] | undefined;
+
+      if (channelJid || channelName || cleanLink) {
+        const resolved = await resolveWhatsAppChannel(
+          sess?.sock,
+          req.username,
+          cleanLink || channelJid || channelName,
+          { newsletterJid: channelJid, newsletterName: channelName, channelLink: cleanLink },
+          cleanLink
+        );
+        if (resolved && isNumericNewsletterJid(resolved.newsletterJid)) {
+          resolvedChannelInfo = {
+            newsletterJid: resolved.newsletterJid,
+            newsletterName: (channelName || resolved.newsletterName).trim(),
+            serverMessageId: resolved.serverMessageId || 1,
+            channelLink: cleanLink || resolved.inviteLink
+          };
+        } else if (channelName || settings.defaultChannelJid) {
+          resolvedChannelInfo = {
+            newsletterJid: isNumericNewsletterJid(channelJid) ? String(channelJid).trim() : (settings.defaultChannelJid || ''),
+            newsletterName: String(channelName || settings.defaultChannelName || 'WhatsApp Channel').trim(),
+            serverMessageId: 1,
+            channelLink: cleanLink
+          };
+        }
+      } else if (settings.defaultChannelJid && isNumericNewsletterJid(settings.defaultChannelJid)) {
+        resolvedChannelInfo = {
+          newsletterJid: settings.defaultChannelJid,
+          newsletterName: settings.defaultChannelName || 'WhatsApp Channel',
+          serverMessageId: 1,
+          channelLink: settings.defaultChannelInviteLink
+        };
+      }
+
+      const cleanCaption = caption ? String(caption).trim() : '';
+      const firstMediaType = savedMedia[0]?.mediaType || 'text';
+      const newShare: CapturedShare = {
+        id: `share_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        timestamp: new Date().toISOString(),
+        from: 'Dashboard Studio',
+        sender: req.username,
+        quotedSender: '',
+        quotedMessageId: '',
+        quotedMessage: savedMedia.length === 0 && cleanCaption ? { conversation: cleanCaption } : null,
+        displayText: cleanCaption || (savedMedia.length > 1 ? `[Multi-Media Card • ${savedMedia.length} items]` : `[${firstMediaType.toUpperCase()} Card]`),
+        mediaType: firstMediaType,
+        caption: cleanCaption,
+        extraMedia: savedMedia,
+        cardLayout: cardLayout === 'carousel' ? 'carousel' : 'album',
+        channelInfo: resolvedChannelInfo,
+        channelLink: cleanLink,
+        appendChannelLink: false,
+        showForwardedTag: showForwardedTag !== undefined ? !!showForwardedTag : (settings.showForwardedTagOnShare !== false),
+        status: 'pending',
+        forwardedTo: []
+      };
+
+      const shares = loadUserShares(req.username);
+      shares.push(newShare);
+      saveUserShares(req.username, shares);
+
+      addLog(req.username, `✨ Created Channel Card "${newShare.id}" with ${savedMedia.length} media item(s) (Layout: ${newShare.cardLayout}, Forwarded Tag: ${newShare.showForwardedTag ? 'ON' : 'OFF'}).`, 'success');
+      res.json({ success: true, share: newShare, message: 'Channel card created successfully!' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Add one or more media items (upload or URL) into an existing share card
+  app.post('/api/shares/:id/media', requireAuth, (req: any, res) => {
+    try {
+      const cleanId = decodeURIComponent(req.params.id).trim();
+      const { mediaItems } = req.body;
+      const shares = loadUserShares(req.username);
+      const share = shares.find(s => String(s.id).trim() === cleanId);
+      if (!share) {
+        return res.status(404).json({ success: false, error: 'Share not found.' });
+      }
+      const itemsList = Array.isArray(mediaItems) ? mediaItems : [];
+      if (itemsList.length === 0) {
+        return res.status(400).json({ success: false, error: 'No media items provided.' });
+      }
+
+      share.extraMedia = share.extraMedia || [];
+      let addedCount = 0;
+
+      for (const item of itemsList) {
+        if (item.dataUrl && typeof item.dataUrl === 'string') {
+          const saved = saveShareMediaUpload(req.username, item.dataUrl, item.fileName, item.mimeType);
+          share.extraMedia.push({
+            id: `sm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            mediaType: saved.mediaType,
+            mimeType: saved.mimeType,
+            fileName: saved.fileName,
+            caption: item.caption ? String(item.caption) : undefined,
+            localFile: saved.localFile,
+            addedAt: new Date().toISOString()
+          });
+          addedCount++;
+        } else if (item.url && typeof item.url === 'string' && item.url.trim()) {
+          const cleanUrl = item.url.trim();
+          const mType: 'image' | 'video' | 'document' | 'audio' =
+            item.mediaType === 'video' || /\.(mp4|mov|webm|mkv)(\?|$)/i.test(cleanUrl)
+              ? 'video'
+              : item.mediaType === 'document' || /\.(pdf|doc|docx|zip|txt)(\?|$)/i.test(cleanUrl)
+                ? 'document'
+                : item.mediaType === 'audio' || /\.(mp3|ogg|wav|m4a)(\?|$)/i.test(cleanUrl)
+                  ? 'audio'
+                  : 'image';
+          share.extraMedia.push({
+            id: `sm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            mediaType: mType,
+            mimeType: item.mimeType,
+            fileName: item.fileName || path.basename(cleanUrl.split('?')[0]) || 'media',
+            caption: item.caption ? String(item.caption) : undefined,
+            url: cleanUrl,
+            addedAt: new Date().toISOString()
+          });
+          addedCount++;
+        }
+      }
+
+      saveUserShares(req.username, shares);
+      addLog(req.username, `🖼️ Added ${addedCount} media item(s) to Channel Card "${share.id}".`, 'success');
+      res.json({ success: true, share, message: `Added ${addedCount} media item(s) to card.` });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Remove an extra media item from a share card
+  app.delete('/api/shares/:id/media/:mediaId', requireAuth, (req: any, res) => {
+    try {
+      const cleanId = decodeURIComponent(req.params.id).trim();
+      const mediaId = decodeURIComponent(req.params.mediaId).trim();
+      const shares = loadUserShares(req.username);
+      const share = shares.find(s => String(s.id).trim() === cleanId);
+      if (!share) {
+        return res.status(404).json({ success: false, error: 'Share not found.' });
+      }
+      const existingList = share.extraMedia || [];
+      const removedItem = existingList.find(m => m.id === mediaId);
+      share.extraMedia = existingList.filter(m => m.id !== mediaId);
+
+      if (removedItem?.localFile) {
+        const stillUsed = shares.some(s => (s.extraMedia || []).some(m => m.localFile === removedItem.localFile));
+        if (!stillUsed) {
+          const target = path.join(getUserShareMediaDir(req.username), path.basename(removedItem.localFile));
+          try {
+            if (fs.existsSync(target)) fs.unlinkSync(target);
+          } catch {}
+        }
+      }
+
+      saveUserShares(req.username, shares);
+      res.json({ success: true, share, message: 'Media item removed from card.' });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Update per-share options (caption, showForwardedTag, cardLayout)
+  app.put('/api/shares/:id/options', requireAuth, (req: any, res) => {
+    try {
+      const cleanId = decodeURIComponent(req.params.id).trim();
+      const { caption, showForwardedTag, cardLayout } = req.body;
+      const shares = loadUserShares(req.username);
+      const share = shares.find(s => String(s.id).trim() === cleanId);
+      if (!share) {
+        return res.status(404).json({ success: false, error: 'Share not found.' });
+      }
+      if (caption !== undefined) {
+        const cleanCap = String(caption);
+        share.caption = cleanCap;
+        share.displayText = cleanCap || share.displayText;
+        if (share.quotedMessage && typeof share.quotedMessage === 'object') {
+          const unwrapped = unwrapQuotedMessage(share.quotedMessage);
+          if (unwrapped.conversation !== undefined) unwrapped.conversation = cleanCap;
+          else if (unwrapped.extendedTextMessage) unwrapped.extendedTextMessage.text = cleanCap;
+          else if (unwrapped.imageMessage) unwrapped.imageMessage.caption = cleanCap;
+          else if (unwrapped.videoMessage) unwrapped.videoMessage.caption = cleanCap;
+          else if (unwrapped.documentMessage) unwrapped.documentMessage.caption = cleanCap;
+        }
+      }
+      if (showForwardedTag !== undefined) {
+        share.showForwardedTag = !!showForwardedTag;
+      }
+      if (cardLayout === 'album' || cardLayout === 'carousel') {
+        share.cardLayout = cardLayout;
+      }
+      saveUserShares(req.username, shares);
+      res.json({ success: true, share });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   app.delete('/api/shares/:id', requireAuth, (req: any, res) => {
     const rawId = req.params.id;
     const cleanId = decodeURIComponent(rawId).trim();
     let shares = loadUserShares(req.username);
+    const target = shares.find(s => String(s.id).trim() === cleanId && String(s.id).trim() !== '' || String(s.id).trim() === rawId);
     shares = shares.filter(s => String(s.id).trim() !== cleanId && String(s.id).trim() !== rawId);
+    if (target) {
+      cleanupShareMediaFiles(req.username, target, shares);
+    }
     saveUserShares(req.username, shares);
     addLog(req.username, `🗑️ Deleted captured share "${cleanId}".`, 'success');
     res.json({ success: true, message: 'Share deleted successfully.' });
@@ -5894,6 +6762,10 @@ function getFirestoreStatusPayload() {
 
   app.delete('/api/shares', requireAuth, (req: any, res) => {
     try {
+      const existing = loadUserShares(req.username);
+      for (const s of existing) {
+        cleanupShareMediaFiles(req.username, s, []);
+      }
       saveUserShares(req.username, []);
       addLog(req.username, '🧹 All captured shares cleared.', 'success');
       res.json({ success: true, message: 'All captured shares cleared successfully.' });
@@ -5903,7 +6775,7 @@ function getFirestoreStatusPayload() {
   });
 
   app.post('/api/shares/forward', requireAuth, async (req: any, res) => {
-    const { shareId, targetJids, sessionId, channelInfo, useChannelTag, channelLink, appendChannelLink } = req.body;
+    const { shareId, targetJids, sessionId, channelInfo, useChannelTag, channelLink, appendChannelLink, showForwardedTag, cardLayout } = req.body;
     if (!shareId || !Array.isArray(targetJids) || targetJids.length === 0) {
       return res.status(400).json({ success: false, error: 'Invalid shareId or targetJids' });
     }
@@ -5925,6 +6797,15 @@ function getFirestoreStatusPayload() {
     const userSettings = loadUserSettings(req.username);
     const batchSize = userSettings.shareBatchSize || 5;
     const pauseSec = userSettings.shareBatchPauseSeconds || 10;
+
+    const effectiveShowForwarded =
+      showForwardedTag !== undefined
+        ? !!showForwardedTag
+        : (share.showForwardedTag !== undefined ? share.showForwardedTag : (userSettings.showForwardedTagOnShare !== false));
+    const effectiveCardLayout: 'album' | 'carousel' =
+      cardLayout === 'carousel' || cardLayout === 'album'
+        ? cardLayout
+        : (share.cardLayout || 'album');
 
     // Determine target channel tag info and effective direct channel link:
     let effectiveChannelInfo: { newsletterJid: string; newsletterName: string; serverMessageId?: number; channelLink?: string } | null = null;
@@ -5992,11 +6873,27 @@ function getFirestoreStatusPayload() {
       }
     }
 
-    // Prepare message payload with unwrapped media/text structure, formatting, channel tags and clickable link
-    const preparedMsgPayload = prepareForwardedMessage(share.quotedMessage, effectiveChannelInfo, {
-      channelLink: effectiveChannelLink,
-      appendChannelLink: appendChannelLink === true && !!effectiveChannelLink
-    });
+    const hasExtraMedia = Array.isArray(share.extraMedia) && share.extraMedia.length > 0;
+    let preparedMediaBundle: { items: PreparedMediaEntry[]; mainCaption: string } | null = null;
+    let preparedMsgPayload: any = null;
+
+    if (hasExtraMedia) {
+      preparedMediaBundle = await prepareShareMediaBundle(sess.sock, req.username, share);
+      if (preparedMediaBundle.items.length === 0) {
+        preparedMsgPayload = prepareForwardedMessage(share.quotedMessage, effectiveChannelInfo, {
+          channelLink: effectiveChannelLink,
+          appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
+          showForwardedTag: effectiveShowForwarded
+        });
+      }
+    } else {
+      // Single message payload with unwrapped media/text structure, formatting, channel tags, optional Forwarded tag, and link settings
+      preparedMsgPayload = prepareForwardedMessage(share.quotedMessage, effectiveChannelInfo, {
+        channelLink: effectiveChannelLink,
+        appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
+        showForwardedTag: effectiveShowForwarded
+      });
+    }
 
     // Process valid targets in batches of configured batchSize
     for (let i = 0; i < validTargetJids.length; i += batchSize) {
@@ -6004,15 +6901,23 @@ function getFirestoreStatusPayload() {
 
       for (const formattedJid of batch) {
         try {
-          addLog(req.username, `Forwarding shared message to ${formattedJid}...${effectiveChannelInfo ? ` [Channel Tag: ${effectiveChannelInfo.newsletterName}]` : ''}${effectiveChannelLink ? ` [Link: ${effectiveChannelLink}]` : ''}`, 'info');
+          addLog(req.username, `Forwarding share card to ${formattedJid}...${effectiveChannelInfo ? ` [Channel Tag: ${effectiveChannelInfo.newsletterName}]` : ''} [Forwarded Tag: ${effectiveShowForwarded ? 'ON' : 'OFF'}]${preparedMediaBundle && preparedMediaBundle.items.length > 1 ? ` [Multi-Media x${preparedMediaBundle.items.length} (${effectiveCardLayout})]` : ''}`, 'info');
           
           await simulateHumanTyping(sess.sock, formattedJid, share.displayText);
 
-          // Dispatch using forwardMessagePayloadWithChannel (preserves channel tag, media & formatting)
-          await forwardMessagePayloadWithChannel(sess.sock, formattedJid, preparedMsgPayload);
+          if (preparedMediaBundle && preparedMediaBundle.items.length > 0) {
+            await sendMultiMediaChannelCard(sess.sock, formattedJid, preparedMediaBundle, effectiveChannelInfo, {
+              channelLink: effectiveChannelLink,
+              appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
+              showForwardedTag: effectiveShowForwarded,
+              cardLayout: effectiveCardLayout
+            });
+          } else {
+            await forwardMessagePayloadWithChannel(sess.sock, formattedJid, preparedMsgPayload);
+          }
           
           results.push({ jid: formattedJid, success: true });
-          addLog(req.username, `✅ Forwarded message to ${formattedJid} successfully.${effectiveChannelInfo ? ` (Channel Tag: ${effectiveChannelInfo.newsletterName})` : ''}`, 'success');
+          addLog(req.username, `✅ Forwarded card to ${formattedJid} successfully.${effectiveChannelInfo ? ` (Channel Tag: ${effectiveChannelInfo.newsletterName})` : ''}`, 'success');
         } catch (err: any) {
           console.error(`Error forwarding to ${formattedJid}:`, err);
           let errMsg = err?.message || String(err);
@@ -6043,8 +6948,10 @@ function getFirestoreStatusPayload() {
       }
     }
 
-    // Update share status & optionally update channelInfo/channelLink if customized
+    // Update share status & optionally update channelInfo/channelLink/showForwardedTag/cardLayout
     share.status = 'forwarded';
+    share.showForwardedTag = effectiveShowForwarded;
+    share.cardLayout = effectiveCardLayout;
     if (effectiveChannelInfo) {
       share.channelInfo = effectiveChannelInfo;
     }
@@ -6055,7 +6962,15 @@ function getFirestoreStatusPayload() {
     share.forwardedTo = uniqueTargets;
     saveUserShares(req.username, shares);
 
-    res.json({ success: true, results, channelInfo: effectiveChannelInfo, channelLink: effectiveChannelLink });
+    res.json({
+      success: true,
+      results,
+      channelInfo: effectiveChannelInfo,
+      channelLink: effectiveChannelLink,
+      showForwardedTag: effectiveShowForwarded,
+      appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
+      mediaCount: preparedMediaBundle ? preparedMediaBundle.items.length : 1
+    });
   });
 
   // Update or clear Channel Tag & Channel Link for a specific captured share

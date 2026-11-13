@@ -317,6 +317,7 @@ export default function App() {
   const [defaultChannelInviteLink, setDefaultChannelInviteLink] = useState<string>('');
   const [autoAttachChannelTag, setAutoAttachChannelTag] = useState<boolean>(false);
   const [appendChannelLinkToShare, setAppendChannelLinkToShare] = useState<boolean>(false);
+  const [showForwardedTagOnShare, setShowForwardedTagOnShare] = useState<boolean>(true);
   const [followedChannels, setFollowedChannels] = useState<any[]>([]);
   const [isLoadingFollowedChannels, setIsLoadingFollowedChannels] = useState<boolean>(false);
   const [isVerifyingChannel, setIsVerifyingChannel] = useState<boolean>(false);
@@ -937,6 +938,7 @@ export default function App() {
           setDefaultChannelInviteLink(data.settings.defaultChannelInviteLink || '');
           setAutoAttachChannelTag(!!data.settings.autoAttachChannelTag);
           setAppendChannelLinkToShare(!!data.settings.appendChannelLinkToShare);
+          setShowForwardedTagOnShare(data.settings.showForwardedTagOnShare !== undefined ? !!data.settings.showForwardedTagOnShare : true);
         }
       }
     } catch (e) {
@@ -953,7 +955,8 @@ export default function App() {
     channelName?: string,
     autoAttach?: boolean,
     channelInviteLink?: string,
-    appendLink?: boolean
+    appendLink?: boolean,
+    showForwardedTag?: boolean
   ) => {
     setIsSavingSettings(true);
     try {
@@ -968,7 +971,8 @@ export default function App() {
           defaultChannelName: channelName !== undefined ? channelName : defaultChannelName,
           defaultChannelInviteLink: channelInviteLink !== undefined ? channelInviteLink : defaultChannelInviteLink,
           autoAttachChannelTag: autoAttach !== undefined ? autoAttach : autoAttachChannelTag,
-          appendChannelLinkToShare: appendLink !== undefined ? appendLink : appendChannelLinkToShare
+          appendChannelLinkToShare: appendLink !== undefined ? appendLink : appendChannelLinkToShare,
+          showForwardedTagOnShare: showForwardedTag !== undefined ? showForwardedTag : showForwardedTagOnShare
         })
       });
       const data = await res.json();
@@ -982,6 +986,7 @@ export default function App() {
         setDefaultChannelInviteLink(data.settings.defaultChannelInviteLink || '');
         setAutoAttachChannelTag(!!data.settings.autoAttachChannelTag);
         setAppendChannelLinkToShare(!!data.settings.appendChannelLinkToShare);
+        setShowForwardedTagOnShare(data.settings.showForwardedTagOnShare !== undefined ? !!data.settings.showForwardedTagOnShare : true);
         setFeedback({ type: 'success', text: 'Settings updated successfully!' });
       } else {
         setFeedback({ type: 'error', text: data.error || 'Failed to save settings.' });
@@ -5968,6 +5973,7 @@ export default function App() {
             fetchWithAuth={fetchWithAuth}
             setFeedback={setFeedback}
             sessionsList={sessionsList}
+            authToken={token}
           />
         ) : currentView === 'queue-manager' ? (
           <QueueManagerPage
@@ -6236,12 +6242,27 @@ export default function App() {
                           className="w-4 h-4 rounded text-emerald-500 accent-emerald-500 cursor-pointer"
                         />
                       </div>
+
+                      <div className="flex items-center justify-between p-3 bg-slate-950/60 border border-slate-800 rounded-xl">
+                        <div className="pr-3">
+                          <span className="text-xs font-medium text-slate-200 block">Show &quot;Forwarded&quot; Tag on Channel Cards</span>
+                          <span className="text-[10px] text-slate-500 block">
+                            Control whether shared channel cards show WhatsApp&apos;s &quot;Forwarded&quot; label in groups. Turn off for clean channel cards, or override in chat using <code className="text-emerald-400 font-mono">.share noforward</code> / <code className="text-emerald-400 font-mono">.sharetag off</code>.
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={showForwardedTagOnShare}
+                          onChange={(e) => setShowForwardedTagOnShare(e.target.checked)}
+                          className="w-4 h-4 rounded text-emerald-500 accent-emerald-500 cursor-pointer shrink-0"
+                        />
+                      </div>
                     </div>
 
                     <button
                       type="button"
                       disabled={isSavingSettings}
-                      onClick={() => saveSettings(secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds, defaultChannelJid, defaultChannelName, autoAttachChannelTag, defaultChannelInviteLink, appendChannelLinkToShare)}
+                      onClick={() => saveSettings(secretPrefix, disableTextProcessing, shareBatchSize, shareBatchPauseSeconds, defaultChannelJid, defaultChannelName, autoAttachChannelTag, defaultChannelInviteLink, appendChannelLinkToShare, showForwardedTagOnShare)}
                       className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-500 hover:bg-emerald-450 text-slate-950 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-50"
                     >
                       <Check className="w-4 h-4" />
