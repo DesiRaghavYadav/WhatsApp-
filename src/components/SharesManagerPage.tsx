@@ -974,7 +974,7 @@ export default function SharesManagerPage({ fetchWithAuth, setFeedback, sessions
                       {useChannelTag && share.channelInfo && (
                         <span className="text-emerald-400 flex items-center gap-1">
                           <Radio className="w-3 h-3" />
-                          View Channel pill active
+                          {showForwardedTag ? 'Native View Channel pill active' : 'Top Channel Header banner active'}
                         </span>
                       )}
                     </div>
@@ -1304,7 +1304,7 @@ export default function SharesManagerPage({ fetchWithAuth, setFeedback, sessions
                       <span className="text-emerald-400/90 font-medium">
                         {showForwardedTag
                           ? '↪ "Forwarded" label ON • Native Channel banner active'
-                          : '✨ Clean card (No "Forwarded" label) • Native Channel banner active'}
+                          : '✨ No "Forwarded" label • Top Channel Header banner active'}
                       </span>
                     </div>
                   </div>

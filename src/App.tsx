@@ -74,7 +74,9 @@ import {
   Edit2,
   Target,
   Smile,
-  Radio
+  Radio,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 
 import {
@@ -325,6 +327,8 @@ export default function App() {
   const [blockedInput, setBlockedInput] = useState<string>('');
   const [isSavingBlocked, setIsSavingBlocked] = useState<boolean>(false);
   const [capturedGroupInvites, setCapturedGroupInvites] = useState<any[]>([]);
+  const [selectedDashboardInviteCodes, setSelectedDashboardInviteCodes] = useState<string[]>([]);
+  const [dashboardInviteCopyKey, setDashboardInviteCopyKey] = useState<string | null>(null);
   const [isLoadingCapturedGroups, setIsLoadingCapturedGroups] = useState<boolean>(false);
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
   const [serverResources, setServerResources] = useState<any>(null);
@@ -1115,11 +1119,49 @@ export default function App() {
         const data = await res.json();
         if (data.success) {
           setCapturedGroupInvites([]);
+          setSelectedDashboardInviteCodes([]);
           setFeedback({ type: 'success', text: 'Captured WhatsApp group link database cleared.' });
         }
       }
     } catch (e) {
       setFeedback({ type: 'error', text: 'Error clearing captured group invites database.' });
+    }
+  };
+
+  const copyDashboardInviteUrls = async (urls: string[], key: string, label: string) => {
+    const cleanUrls = Array.from(new Set(urls.map(u => (u || '').trim()).filter(Boolean)));
+    if (cleanUrls.length === 0) {
+      setFeedback({ type: 'error', text: 'No group links available to copy.' });
+      return;
+    }
+    const text = cleanUrls.join('\n');
+    let copied = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {}
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {}
+    }
+    if (copied) {
+      setDashboardInviteCopyKey(key);
+      setTimeout(() => setDashboardInviteCopyKey(prev => (prev === key ? null : prev)), 2000);
+      setFeedback({ type: 'success', text: `Copied ${cleanUrls.length} ${cleanUrls.length === 1 ? 'group link' : 'group links'} (${label}) to clipboard.` });
+    } else {
+      setFeedback({ type: 'error', text: 'Clipboard permission blocked.' });
     }
   };
 
@@ -1586,13 +1628,14 @@ export default function App() {
   const checkStuckConnectingSessions = (sessions: any[]) => {
     if (!Array.isArray(sessions)) return;
     const now = Date.now();
-    const STUCK_THRESHOLD_MS = 25000; // 25 seconds stuck in 'connecting'
+    const STUCK_THRESHOLD_MS = 75000; // 75 seconds stuck in 'connecting' without QR/pairing prompt
 
     sessions.forEach((sess: any) => {
       const id = sess.id;
       if (!id) return;
 
-      if (sess.status === 'connecting') {
+      const hasActivePrompt = Boolean(sess.qrBase64 || sess.pairingCode);
+      if (sess.status === 'connecting' && !hasActivePrompt) {
         if (!connectingStartTimesRef.current[id]) {
           connectingStartTimesRef.current[id] = now;
         } else {
@@ -1622,7 +1665,7 @@ export default function App() {
           }
         }
       } else {
-        // Reset timestamp if session is connected, disconnected, or in QR state
+        // Reset timestamp if session is connected, disconnected, or actively showing QR / pairing code
         delete connectingStartTimesRef.current[id];
         delete autoReconnectingSessionsRef.current[id];
       }
@@ -1890,7 +1933,7 @@ export default function App() {
     try {
       const res = await fetchWithAuth('/api/sessions/reconnect', {
         method: 'POST',
-        body: JSON.stringify({ id: sessionId, sessionId })
+        body: JSON.stringify({ id: sessionId, sessionId, force: true })
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -5958,7 +6001,7 @@ export default function App() {
           <GroupInvitesManagerPage
             token={token}
             username={username}
-            addToast={(msg, type) => setFeedback({ message: msg, type })}
+            addToast={(msg, type) => setFeedback({ text: msg, type: type === 'error' ? 'error' : 'success' })}
             sessions={sessionsList}
           />
         ) : currentView === 'scan' ? (
@@ -6247,7 +6290,7 @@ export default function App() {
                         <div className="pr-3">
                           <span className="text-xs font-medium text-slate-200 block">Show &quot;Forwarded&quot; Tag on Channel Cards</span>
                           <span className="text-[10px] text-slate-500 block">
-                            Control whether shared channel cards show WhatsApp&apos;s &quot;Forwarded&quot; label in groups. Turn off for clean channel cards, or override in chat using <code className="text-emerald-400 font-mono">.share noforward</code> / <code className="text-emerald-400 font-mono">.sharetag off</code>.
+                            Control whether shared channel cards show WhatsApp&apos;s &quot;Forwarded&quot; label in groups. When OFF, the &quot;Forwarded&quot; badge is removed while keeping a clickable Channel Header banner at the top of the message (or use <code className="text-emerald-400 font-mono">.share noforward</code> / <code className="text-emerald-400 font-mono">.sharetag off</code>).
                           </span>
                         </div>
                         <input
@@ -6415,9 +6458,96 @@ export default function App() {
                     </div>
                   </div>
 
-                  <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+                  <p className="text-xs text-slate-400 mb-4 leading-relaxed">
                     Passively captured WhatsApp group invitation links matched in active chats. Discovered silently without joining.
                   </p>
+
+                  {capturedGroupInvites.length > 0 && (() => {
+                    const allKeys = capturedGroupInvites.map((inv: any) => inv.code || inv.url);
+                    const validSelected = selectedDashboardInviteCodes.filter(c => allKeys.includes(c));
+                    const allSelected = allKeys.length > 0 && allKeys.every((k: string) => validSelected.includes(k));
+                    const selectedInvites = capturedGroupInvites.filter((inv: any) => validSelected.includes(inv.code || inv.url));
+
+                    return (
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-4 p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl">
+                        <div className="flex items-center gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (allSelected) {
+                                setSelectedDashboardInviteCodes([]);
+                              } else {
+                                setSelectedDashboardInviteCodes(allKeys);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            {allSelected ? (
+                              <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Square className="w-3.5 h-3.5 text-slate-400" />
+                            )}
+                            <span>{allSelected ? 'Deselect All' : `Select All (${allKeys.length})`}</span>
+                          </button>
+
+                          {validSelected.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDashboardInviteCodes([])}
+                              className="text-[11px] text-slate-400 hover:text-white underline cursor-pointer whitespace-nowrap"
+                            >
+                              Clear ({validSelected.length})
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={selectedInvites.length === 0}
+                            onClick={() => copyDashboardInviteUrls(
+                              selectedInvites.map((i: any) => i.url),
+                              'selected',
+                              'Selected'
+                            )}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-500/15 hover:bg-sky-500/25 disabled:opacity-40 disabled:cursor-not-allowed text-sky-300 border border-sky-500/30 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            {dashboardInviteCopyKey === 'selected' ? (
+                              <Check className="w-3 h-3 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                            <span>
+                              {dashboardInviteCopyKey === 'selected'
+                                ? `Copied ${selectedInvites.length}!`
+                                : `Copy Selected (${selectedInvites.length})`}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => copyDashboardInviteUrls(
+                              capturedGroupInvites.slice().reverse().map((i: any) => i.url),
+                              'all',
+                              'All'
+                            )}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 rounded-lg text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            {dashboardInviteCopyKey === 'all' ? (
+                              <Check className="w-3 h-3" />
+                            ) : (
+                              <Copy className="w-3 h-3" />
+                            )}
+                            <span>
+                              {dashboardInviteCopyKey === 'all'
+                                ? `Copied All (${capturedGroupInvites.length})!`
+                                : `Copy All (${capturedGroupInvites.length})`}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
                     {capturedGroupInvites.length === 0 ? (
@@ -6429,65 +6559,106 @@ export default function App() {
                         </p>
                       </div>
                     ) : (
-                      capturedGroupInvites.slice().reverse().map((invite: any, idx: number) => (
-                        <div key={idx} className="bg-slate-950 border border-slate-850 rounded-xl p-4 text-left relative overflow-hidden transition-all hover:border-slate-750">
-                          <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500/60" />
-                          
-                          <div className="flex items-start justify-between gap-2 mb-2">
-                            <div>
-                              <h4 className="text-xs font-bold text-white truncate max-w-[280px]">
-                                {invite.groupName || 'Unknown Group'}
-                              </h4>
-                              {invite.groupDescription && (
-                                <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-2 max-w-[320px]">
-                                  {invite.groupDescription}
-                                </p>
-                              )}
-                            </div>
-                            <span className="text-[9px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
-                              {invite.groupSize ? `${invite.groupSize} Members` : 'Size unknown'}
-                            </span>
-                          </div>
+                      capturedGroupInvites.slice().reverse().map((invite: any, idx: number) => {
+                        const itemKey = invite.code || invite.url || String(idx);
+                        const isSelected = selectedDashboardInviteCodes.includes(itemKey);
 
-                          <div className="grid grid-cols-2 gap-3 pt-2.5 pb-2 border-t border-b border-slate-850/60 text-[10px] text-slate-400 font-mono">
-                            <div>
-                              <span className="text-slate-500 block">Sender JID</span>
-                              <span className="text-slate-300 text-[9px] truncate block" title={invite.senderJid}>
-                                {invite.senderName || 'Sender'} ({invite.senderJid.split('@')[0]})
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-slate-500 block">Creator / Owner</span>
-                              <span className="text-slate-300 text-[9px] truncate block" title={invite.creatorJid || 'N/A'}>
-                                {invite.creatorJid ? invite.creatorJid.split('@')[0] : 'N/A'}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="mt-3 space-y-2">
-                            <div className="bg-slate-900/50 p-2.5 rounded-lg border border-slate-850/60 text-[11px] text-slate-300 font-sans leading-relaxed italic">
-                              "{invite.messageText}"
-                            </div>
+                        return (
+                          <div
+                            key={itemKey}
+                            className={`bg-slate-950 border rounded-xl p-4 text-left relative overflow-hidden transition-all ${
+                              isSelected ? 'border-emerald-500/70 ring-1 ring-emerald-500/50' : 'border-slate-850 hover:border-slate-750'
+                            }`}
+                          >
+                            <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500/60" />
                             
-                            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[10px]">
-                              <span className="text-slate-500 flex items-center gap-1">
-                                <Clock className="w-3 h-3" />
-                                {new Date(invite.savedAt).toLocaleString()}
+                            <div className="flex items-start justify-between gap-2 mb-2">
+                              <div className="flex items-start gap-2 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedDashboardInviteCodes(prev =>
+                                    prev.includes(itemKey) ? prev.filter(k => k !== itemKey) : [...prev, itemKey]
+                                  )}
+                                  className="mt-0.5 shrink-0 text-slate-400 hover:text-emerald-400 cursor-pointer"
+                                  title={isSelected ? 'Deselect link' : 'Select link'}
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare className="w-4 h-4 text-emerald-400" />
+                                  ) : (
+                                    <Square className="w-4 h-4" />
+                                  )}
+                                </button>
+                                <div className="min-w-0">
+                                  <h4 className="text-xs font-bold text-white truncate max-w-[260px]">
+                                    {invite.groupName || 'Unknown Group'}
+                                  </h4>
+                                  {invite.groupDescription && (
+                                    <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-2 max-w-[300px]">
+                                      {invite.groupDescription}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                              <span className="text-[9px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
+                                {invite.groupSize ? `${invite.groupSize} Members` : 'Size unknown'}
                               </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3 pt-2.5 pb-2 border-t border-b border-slate-850/60 text-[10px] text-slate-400 font-mono">
+                              <div>
+                                <span className="text-slate-500 block">Sender JID</span>
+                                <span className="text-slate-300 text-[9px] truncate block" title={invite.senderJid}>
+                                  {invite.senderName || 'Sender'} ({invite.senderJid.split('@')[0]})
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-500 block">Creator / Owner</span>
+                                <span className="text-slate-300 text-[9px] truncate block" title={invite.creatorJid || 'N/A'}>
+                                  {invite.creatorJid ? invite.creatorJid.split('@')[0] : 'N/A'}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 space-y-2">
+                              <div className="bg-slate-900/50 p-2.5 rounded-lg border border-slate-850/60 text-[11px] text-slate-300 font-sans leading-relaxed italic">
+                                "{invite.messageText}"
+                              </div>
                               
-                              <a
-                                href={invite.url}
-                                target="_blank"
-                                rel="noreferrer noopener"
-                                className="text-emerald-400 hover:text-emerald-300 font-bold flex items-center gap-1 transition-colors"
-                              >
-                                <span>Copy Link</span>
-                                <ExternalLink className="w-3 h-3" />
-                              </a>
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[10px]">
+                                <span className="text-slate-500 flex items-center gap-1">
+                                  <Clock className="w-3 h-3" />
+                                  {new Date(invite.savedAt).toLocaleString()}
+                                </span>
+                                
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => copyDashboardInviteUrls([invite.url], `dash:${itemKey}`, invite.groupName || 'Link')}
+                                    className="px-2 py-1 bg-slate-900 hover:bg-slate-800 text-emerald-400 hover:text-emerald-300 border border-slate-800 rounded-md font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                                  >
+                                    {dashboardInviteCopyKey === `dash:${itemKey}` ? (
+                                      <Check className="w-3 h-3" />
+                                    ) : (
+                                      <Copy className="w-3 h-3" />
+                                    )}
+                                    <span>{dashboardInviteCopyKey === `dash:${itemKey}` ? 'Copied!' : 'Copy Link'}</span>
+                                  </button>
+
+                                  <a
+                                    href={invite.url}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    className="p-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 rounded-md transition-colors"
+                                    title="Open WhatsApp invite URL"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>

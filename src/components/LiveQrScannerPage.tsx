@@ -262,7 +262,7 @@ export default function LiveQrScannerPage({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`
         },
-        body: JSON.stringify({ id: sessionId, sessionId })
+        body: JSON.stringify({ id: sessionId, sessionId, force: true })
       });
       const data = await res.json();
       if (res.ok && data.success) {

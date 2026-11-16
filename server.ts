@@ -3,8 +3,9 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
+import zlib from 'zlib';
 import { createServer as createViteServer } from 'vite';
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers, fetchLatestBaileysVersion, proto } from '@queenanya/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessage, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers, fetchLatestBaileysVersion, proto, jidNormalizedUser, isJidGroup } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -100,6 +101,141 @@ function normalizeFilePath(filePath: any): string | null {
   return null;
 }
 
+// Single-doc gzipped Baileys auth bundle backup/restore (saves creds.json + all Signal/AppState/DeviceList keys in 1 Firestore write)
+const authBundleTimers = new Map<string, NodeJS.Timeout>();
+const pendingAuthBundleSyncs = new Set<string>();
+
+function parseAuthFolderInfo(relativePath: string): { username: string; sessionId: string; fileName: string } | null {
+  const normalized = relativePath.replace(/\\/g, '/');
+  const match = normalized.match(/^data\/([^\/]+)\/auth_info_([^\/]+)(?:\/(.+))?$/);
+  if (!match) return null;
+  return {
+    username: match[1],
+    sessionId: match[2],
+    fileName: match[3] || ''
+  };
+}
+
+function getAuthBundleDocId(username: string, sessionId: string): string {
+  return `auth_bundle___${username}___${sessionId}`;
+}
+
+async function syncAuthBundleToFirestore(username: string, sessionId: string): Promise<void> {
+  if (!db || isQuotaExceeded) return;
+  const authFolder = path.join(process.cwd(), 'data', username, 'auth_info_' + sessionId);
+  const credsPath = path.join(authFolder, 'creds.json');
+  if (!fs.existsSync(credsPath)) return;
+
+  try {
+    const entries = fs.readdirSync(authFolder);
+    // Prioritize essential state files first so even very old sessions stay well under Firestore's 1MB limit
+    const withStats = entries
+      .filter(f => !f.startsWith('.'))
+      .map(f => {
+        const full = path.join(authFolder, f);
+        try {
+          const st = fs.statSync(full);
+          if (!st.isFile()) return null;
+          let priority = 3;
+          if (f === 'creds.json') priority = 0;
+          else if (f.startsWith('app-state-sync-') || f.startsWith('device-list-') || f.startsWith('lid-mapping-')) priority = 1;
+          else if (f.startsWith('pre-key-')) priority = 2;
+          return { name: f, full, mtimeMs: st.mtimeMs, priority };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as Array<{ name: string; full: string; mtimeMs: number; priority: number }>;
+
+    withStats.sort((a, b) => (a.priority - b.priority) || (b.mtimeMs - a.mtimeMs));
+
+    const filesMap: Record<string, string> = {};
+    for (const entry of withStats) {
+      try {
+        filesMap[entry.name] = fs.readFileSync(entry.full, 'utf8');
+      } catch {}
+    }
+
+    if (!filesMap['creds.json']) return;
+
+    let compressedB64 = zlib.gzipSync(Buffer.from(JSON.stringify(filesMap), 'utf8')).toString('base64');
+    // Trim oldest low-priority session/sender keys only if gzipped payload exceeds 720KB
+    if (compressedB64.length > 720 * 1024) {
+      const removable = withStats.filter(e => e.priority >= 3).reverse();
+      for (const rem of removable) {
+        delete filesMap[rem.name];
+        compressedB64 = zlib.gzipSync(Buffer.from(JSON.stringify(filesMap), 'utf8')).toString('base64');
+        if (compressedB64.length <= 720 * 1024) break;
+      }
+    }
+
+    const docId = getAuthBundleDocId(username, sessionId);
+    await setDoc(doc(db, 'app_data', docId), {
+      username,
+      sessionId,
+      bundleGzipBase64: compressedB64,
+      fileCount: Object.keys(filesMap).length,
+      updatedAt: new Date().toISOString(),
+      updatedAtMs: Date.now()
+    });
+  } catch (err: any) {
+    handleFirestoreError(`Error syncing auth bundle (${username}:${sessionId}) to Firestore`, err);
+  }
+}
+
+function scheduleAuthBundleSync(username: string, sessionId: string, delayMs = 3500) {
+  if (!db || isQuotaExceeded) return;
+  const key = `${username}:${sessionId}`;
+  pendingAuthBundleSyncs.add(key);
+  if (authBundleTimers.has(key)) {
+    clearTimeout(authBundleTimers.get(key)!);
+  }
+  const timer = setTimeout(() => {
+    authBundleTimers.delete(key);
+    pendingAuthBundleSyncs.delete(key);
+    syncAuthBundleToFirestore(username, sessionId).catch(() => {});
+  }, delayMs);
+  authBundleTimers.set(key, timer);
+}
+
+async function flushAllPendingAuthBundles() {
+  const keys = new Set<string>(pendingAuthBundleSyncs);
+  for (const [k, timer] of authBundleTimers.entries()) {
+    clearTimeout(timer);
+    authBundleTimers.delete(k);
+    keys.add(k);
+  }
+  pendingAuthBundleSyncs.clear();
+  for (const [userSessKey, sess] of sessions.entries()) {
+    if (sess?.status === 'connected') {
+      keys.add(userSessKey);
+    }
+  }
+  const tasks: Promise<void>[] = [];
+  for (const key of keys) {
+    const idx = key.indexOf(':');
+    if (idx > 0) {
+      const u = key.slice(0, idx);
+      const s = key.slice(idx + 1);
+      tasks.push(syncAuthBundleToFirestore(u, s));
+    }
+  }
+  await Promise.allSettled(tasks);
+}
+
+function deleteAuthBundleFromFirestore(username: string, sessionId: string) {
+  const key = `${username}:${sessionId}`;
+  pendingAuthBundleSyncs.delete(key);
+  if (authBundleTimers.has(key)) {
+    clearTimeout(authBundleTimers.get(key)!);
+    authBundleTimers.delete(key);
+  }
+  if (!db || isQuotaExceeded) return;
+  deleteDoc(doc(db, 'app_data', getAuthBundleDocId(username, sessionId))).catch(err => {
+    handleFirestoreError(`Error deleting auth bundle (${key}) from Firestore`, err);
+  });
+}
+
 function syncFileToFirestore(rawFilePath: any, data: any) {
   if (!db || isQuotaExceeded) return;
   try {
@@ -109,12 +245,14 @@ function syncFileToFirestore(rawFilePath: any, data: any) {
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep) || relativePath === 'data') {
         const fileName = path.basename(relativePath);
-        const isAuthInfoFolder = relativePath.includes('auth_info_');
+        const authInfo = parseAuthFolderInfo(relativePath);
 
-        // Skip transient Baileys auth sub-key files (pre-key-*, session-*, sender-key-*, app-state-sync-*)
-        // Only mirror main creds.json and user config data files to preserve Firestore daily write quotas
-        if (isAuthInfoFolder && fileName !== 'creds.json') {
-          return;
+        if (authInfo) {
+          // Bundle creds.json + all Signal/AppState/DeviceList keys into ONE debounced Firestore doc
+          scheduleAuthBundleSync(authInfo.username, authInfo.sessionId, fileName === 'creds.json' ? 2000 : 4000);
+          if (fileName !== 'creds.json') {
+            return;
+          }
         }
 
         if (typeof data === 'string' || Buffer.isBuffer(data)) {
@@ -147,10 +285,15 @@ function syncDeleteToFirestore(rawFilePath: any) {
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep)) {
         const fileName = path.basename(relativePath);
-        const isAuthInfoFolder = relativePath.includes('auth_info_');
+        const authInfo = parseAuthFolderInfo(relativePath);
 
-        if (isAuthInfoFolder && fileName !== 'creds.json') {
-          return;
+        if (authInfo) {
+          if (fileName === 'creds.json') {
+            deleteAuthBundleFromFirestore(authInfo.username, authInfo.sessionId);
+          } else {
+            scheduleAuthBundleSync(authInfo.username, authInfo.sessionId, 4000);
+            return;
+          }
         }
 
         const docId = relativePath.replace(/[\/\\]/g, '___');
@@ -172,6 +315,11 @@ function syncDirDeleteToFirestore(rawFilePath: any) {
     const relativePath = path.relative(process.cwd(), filePath);
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep)) {
+        const authInfo = parseAuthFolderInfo(relativePath);
+        if (authInfo && !authInfo.fileName) {
+          deleteAuthBundleFromFirestore(authInfo.username, authInfo.sessionId);
+        }
+
         const docId = relativePath.replace(/[\/\\]/g, '___');
         // Delete the doc itself if it was a file
         deleteDoc(doc(db, 'files', docId)).catch(() => {});
@@ -340,6 +488,56 @@ async function restoreTokensFromFirestore() {
   }
 }
 
+async function restoreAuthBundlesFromFirestore() {
+  if (!db || isQuotaExceeded) return;
+  try {
+    const appDataSnap = await getDocs(collection(db, 'app_data'));
+    let bundleCount = 0;
+    appDataSnap.forEach(docSnap => {
+      if (!docSnap.id.startsWith('auth_bundle___')) return;
+      const data = docSnap.data();
+      if (!data?.username || !data?.sessionId || !data?.bundleGzipBase64) return;
+
+      const authFolder = path.join(process.cwd(), 'data', String(data.username), 'auth_info_' + String(data.sessionId));
+      const localCreds = path.join(authFolder, 'creds.json');
+      const bundleUpdatedMs = Number(data.updatedAtMs) || (data.updatedAt ? Date.parse(data.updatedAt) : 0);
+
+      // Skip overwriting newer local disk credentials if this is a warm server restart
+      if (fs.existsSync(localCreds)) {
+        try {
+          const localStat = fs.statSync(localCreds);
+          if (bundleUpdatedMs && localStat.mtimeMs > bundleUpdatedMs + 2000) {
+            return;
+          }
+        } catch {}
+      }
+
+      try {
+        const rawJson = zlib.gunzipSync(Buffer.from(data.bundleGzipBase64, 'base64')).toString('utf8');
+        const filesMap = JSON.parse(rawJson) as Record<string, string>;
+        if (!filesMap || typeof filesMap !== 'object' || !filesMap['creds.json']) return;
+
+        fs.mkdirSync(authFolder, { recursive: true });
+        for (const [fileName, content] of Object.entries(filesMap)) {
+          const safeName = path.basename(fileName);
+          if (!safeName || typeof content !== 'string') continue;
+          const targetPath = path.join(authFolder, safeName);
+          originalWriteFileSync.call(fs, targetPath, content, 'utf8');
+        }
+        bundleCount++;
+        console.log(`[FIREBASE] Restored full WhatsApp auth bundle (${Object.keys(filesMap).length} key files) for ${data.username}:${data.sessionId}.`);
+      } catch (unzipErr: any) {
+        console.error(`[FIREBASE] Failed unpacking auth bundle ${docSnap.id}:`, unzipErr?.message || unzipErr);
+      }
+    });
+    if (bundleCount > 0) {
+      console.log(`[FIREBASE] Restored ${bundleCount} complete WhatsApp auth session bundle(s) from Firestore.`);
+    }
+  } catch (err: any) {
+    handleFirestoreError('Error restoring auth bundles from Firestore', err);
+  }
+}
+
 async function restoreAllFilesFromFirestore() {
   if (!db || isQuotaExceeded) {
     console.log('[FIREBASE] Cannot restore: Firestore database is not initialized or quota exceeded.');
@@ -350,13 +548,22 @@ async function restoreAllFilesFromFirestore() {
     const snapshot = await getDocs(collection(db, 'files'));
     let restoredCount = 0;
     
-    // We want to process each file and write it back locally
+    // We want to process each file and write it back locally (without clobbering strictly newer local files)
     snapshot.forEach(docSnap => {
       const data = docSnap.data();
       const relativePath = data.path;
       if (relativePath) {
         const localPath = path.join(process.cwd(), relativePath);
-        // Ensure parent directory exists using original mkdirSync
+        if (fs.existsSync(localPath) && data.updatedAt) {
+          try {
+            const localStat = fs.statSync(localPath);
+            const remoteMs = Date.parse(data.updatedAt);
+            if (!isNaN(remoteMs) && localStat.mtimeMs > remoteMs + 2000) {
+              return;
+            }
+          } catch {}
+        }
+
         fs.mkdirSync(path.dirname(localPath), { recursive: true });
         
         let fileBuffer: Buffer | string;
@@ -373,7 +580,8 @@ async function restoreAllFilesFromFirestore() {
     });
     console.log(`[FIREBASE] Successfully restored ${restoredCount} files from Firestore.`);
 
-    // Restore dedicated user accounts & auth tokens collections
+    // Restore full bundled WhatsApp session key sets, user accounts & auth tokens collections
+    await restoreAuthBundlesFromFirestore();
     await restoreUsersFromFirestore();
     await restoreTokensFromFirestore();
   } catch (err: any) {
@@ -675,8 +883,8 @@ function saveCapturedGroupInvite(username: string, invite: CapturedGroupInvite):
   }
 }
 
-// Regex to capture WhatsApp group invite links
-const GROUP_LINK_REGEX = /(?:https?:\/\/)?(?:www\.)?chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9_-]{18,34})/gi;
+// Regex to capture WhatsApp group invite links (handles surrounding text, query params, invite/ path, and multiple links per message)
+const GROUP_LINK_REGEX = /(?:https?:\/\/)?(?:www\.)?chat\.whatsapp\.com\/(?:invite\/)?([A-Za-z0-9_-]{16,40})/gi;
 
 function extractGroupInviteCodes(text: string): string[] {
   if (!text || typeof text !== 'string') return [];
@@ -686,7 +894,7 @@ function extractGroupInviteCodes(text: string): string[] {
   while ((match = regex.exec(text)) !== null) {
     if (match[1]) {
       const cleanCode = match[1].split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '').trim();
-      if (cleanCode && !codes.includes(cleanCode)) {
+      if (cleanCode && cleanCode.length >= 15 && !codes.includes(cleanCode)) {
         codes.push(cleanCode);
       }
     }
@@ -694,77 +902,124 @@ function extractGroupInviteCodes(text: string): string[] {
   return codes;
 }
 
-// Comprehensive extractor that unpacks regular text, disappearing/ephemeral messages, viewOnce, templates, quotes, captions, and native invite cards
+// Comprehensive extractor that unpacks regular text, disappearing/ephemeral messages, viewOnce, templates, quotes, captions, edits, interactive cards, and native invite cards
 function extractComprehensiveMessageContent(rawMsg: any): {
   scanText: string;
   nativeInvites: Array<{ code: string; groupName?: string; caption?: string; groupJid?: string }>;
 } {
   let scanText = '';
   const nativeInvites: Array<{ code: string; groupName?: string; caption?: string; groupJid?: string }> = [];
+  const seenNativeCodes = new Set<string>();
+
+  function appendText(val: any) {
+    if (typeof val === 'string' && val.trim()) {
+      scanText += val + ' ';
+    }
+  }
 
   function inspectNode(node: any) {
     if (!node || typeof node !== 'object') return;
 
-    if (typeof node.conversation === 'string') scanText += node.conversation + ' ';
-    if (typeof node.text === 'string') scanText += node.text + ' ';
-    if (node.extendedTextMessage?.text) scanText += node.extendedTextMessage.text + ' ';
+    appendText(node.conversation);
+    appendText(node.text);
+    if (node.extendedTextMessage) {
+      appendText(node.extendedTextMessage.text);
+      appendText(node.extendedTextMessage.matchedText);
+      appendText(node.extendedTextMessage.canonicalUrl);
+      appendText(node.extendedTextMessage.title);
+      appendText(node.extendedTextMessage.description);
+    }
 
-    if (node.imageMessage?.caption) scanText += node.imageMessage.caption + ' ';
-    if (node.videoMessage?.caption) scanText += node.videoMessage.caption + ' ';
-    if (node.documentMessage?.caption) scanText += node.documentMessage.caption + ' ';
-    if (node.audioMessage?.caption) scanText += node.audioMessage.caption + ' ';
+    appendText(node.imageMessage?.caption);
+    appendText(node.videoMessage?.caption);
+    appendText(node.documentMessage?.caption);
+    appendText(node.audioMessage?.caption);
 
-    if (node.buttonsResponseMessage?.selectedDisplayText) scanText += node.buttonsResponseMessage.selectedDisplayText + ' ';
-    if (node.buttonsResponseMessage?.selectedButtonId) scanText += node.buttonsResponseMessage.selectedButtonId + ' ';
-    if (node.listResponseMessage?.title) scanText += node.listResponseMessage.title + ' ';
-    if (node.listResponseMessage?.singleSelectReply?.selectedRowId) scanText += node.listResponseMessage.singleSelectReply.selectedRowId + ' ';
-    if (node.templateButtonReplyMessage?.selectedDisplayText) scanText += node.templateButtonReplyMessage.selectedDisplayText + ' ';
-    
-    if (node.interactiveMessage?.body?.text) scanText += node.interactiveMessage.body.text + ' ';
-    if (node.interactiveMessage?.header?.title) scanText += node.interactiveMessage.header.title + ' ';
+    appendText(node.buttonsMessage?.contentText);
+    appendText(node.buttonsMessage?.footerText);
+    if (Array.isArray(node.buttonsMessage?.buttons)) {
+      for (const btn of node.buttonsMessage.buttons) {
+        appendText(btn?.buttonText?.displayText);
+        appendText(btn?.buttonId);
+      }
+    }
+    appendText(node.buttonsResponseMessage?.selectedDisplayText);
+    appendText(node.buttonsResponseMessage?.selectedButtonId);
+
+    appendText(node.listMessage?.title);
+    appendText(node.listMessage?.description);
+    appendText(node.listMessage?.footerText);
+    appendText(node.listResponseMessage?.title);
+    appendText(node.listResponseMessage?.singleSelectReply?.selectedRowId);
+
+    appendText(node.templateButtonReplyMessage?.selectedDisplayText);
+    const hydrated = node.templateMessage?.hydratedTemplate || node.templateMessage?.hydratedFourRowTemplate;
+    if (hydrated) {
+      appendText(hydrated.hydratedTitleText);
+      appendText(hydrated.hydratedContentText);
+      appendText(hydrated.hydratedFooterText);
+      if (Array.isArray(hydrated.hydratedButtons)) {
+        for (const hBtn of hydrated.hydratedButtons) {
+          appendText(hBtn?.urlButton?.url);
+          appendText(hBtn?.urlButton?.displayText);
+        }
+      }
+    }
+
+    if (node.interactiveMessage) {
+      appendText(node.interactiveMessage.header?.title);
+      appendText(node.interactiveMessage.header?.subtitle);
+      appendText(node.interactiveMessage.body?.text);
+      appendText(node.interactiveMessage.footer?.text);
+      if (Array.isArray(node.interactiveMessage.nativeFlowMessage?.buttons)) {
+        for (const nBtn of node.interactiveMessage.nativeFlowMessage.buttons) {
+          appendText(nBtn?.buttonParamsJson);
+        }
+      }
+    }
     if (node.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
       try {
         const parsed = JSON.parse(node.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
-        if (parsed.id) scanText += parsed.id + ' ';
+        appendText(parsed.id);
       } catch (e) {}
     }
 
     if (node.groupInviteMessage?.inviteCode) {
-      nativeInvites.push({
-        code: node.groupInviteMessage.inviteCode,
-        groupName: node.groupInviteMessage.groupName,
-        caption: node.groupInviteMessage.caption,
-        groupJid: node.groupInviteMessage.groupJid
-      });
+      const nCode = String(node.groupInviteMessage.inviteCode).trim();
+      if (nCode && !seenNativeCodes.has(nCode)) {
+        seenNativeCodes.add(nCode);
+        nativeInvites.push({
+          code: nCode,
+          groupName: node.groupInviteMessage.groupName,
+          caption: node.groupInviteMessage.caption,
+          groupJid: node.groupInviteMessage.groupJid
+        });
+      }
+      appendText(node.groupInviteMessage.caption);
     }
 
-    // Ephemeral / Disappearing Messages wrapper
-    if (node.ephemeralMessage?.message) {
-      inspectNode(node.ephemeralMessage.message);
-    }
-
-    // View Once Messages wrapper
-    if (node.viewOnceMessage?.message) {
-      inspectNode(node.viewOnceMessage.message);
-    }
-    if (node.viewOnceMessageV2?.message) {
-      inspectNode(node.viewOnceMessageV2.message);
-    }
-    if (node.viewOnceMessageV2Extension?.message) {
-      inspectNode(node.viewOnceMessageV2Extension.message);
-    }
-
-    // Document with Caption wrapper
-    if (node.documentWithCaptionMessage?.message) {
-      inspectNode(node.documentWithCaptionMessage.message);
-    }
+    // Message wrappers (ephemeral, viewOnce, documentWithCaption, edited, botInvoke, etc.)
+    if (node.ephemeralMessage?.message) inspectNode(node.ephemeralMessage.message);
+    if (node.viewOnceMessage?.message) inspectNode(node.viewOnceMessage.message);
+    if (node.viewOnceMessageV2?.message) inspectNode(node.viewOnceMessageV2.message);
+    if (node.viewOnceMessageV2Extension?.message) inspectNode(node.viewOnceMessageV2Extension.message);
+    if (node.documentWithCaptionMessage?.message) inspectNode(node.documentWithCaptionMessage.message);
+    if (node.editedMessage?.message) inspectNode(node.editedMessage.message);
+    if (node.protocolMessage?.editedMessage) inspectNode(node.protocolMessage.editedMessage);
+    if (node.botInvokeMessage?.message) inspectNode(node.botInvokeMessage.message);
+    if (node.groupStatusMentionMessage?.message) inspectNode(node.groupStatusMentionMessage.message);
+    if (node.associatedChildMessage?.message) inspectNode(node.associatedChildMessage.message);
 
     // Quoted Messages (including nested disappearing/viewOnce)
-    const ctx = node.contextInfo || 
-                node.extendedTextMessage?.contextInfo || 
-                node.imageMessage?.contextInfo || 
-                node.videoMessage?.contextInfo || 
-                node.documentMessage?.contextInfo;
+    const ctx = node.contextInfo ||
+                node.extendedTextMessage?.contextInfo ||
+                node.imageMessage?.contextInfo ||
+                node.videoMessage?.contextInfo ||
+                node.documentMessage?.contextInfo ||
+                node.buttonsMessage?.contextInfo ||
+                node.listMessage?.contextInfo ||
+                node.interactiveMessage?.contextInfo ||
+                node.templateMessage?.contextInfo;
     if (ctx?.quotedMessage) {
       inspectNode(ctx.quotedMessage);
     }
@@ -795,6 +1050,7 @@ async function handleGroupInviteUrl(
     nativeName?: string;
     nativeDesc?: string;
     nativeGroupJid?: string;
+    preloadedParticipating?: Record<string, any>;
   }
 ): Promise<CapturedGroupInvite | null> {
   if (!rawCode) return null;
@@ -844,8 +1100,11 @@ async function handleGroupInviteUrl(
   // 2. Check if the user is already in this group
   let alreadyJoined = false;
   try {
-    if (sockInstance && typeof sockInstance.groupFetchAllParticipating === 'function') {
-      const participating = await sockInstance.groupFetchAllParticipating();
+    const participating = metaContext?.preloadedParticipating ||
+      (sockInstance && typeof sockInstance.groupFetchAllParticipating === 'function'
+        ? await sockInstance.groupFetchAllParticipating()
+        : null);
+    if (participating) {
       if (groupJid && participating[groupJid]) {
         alreadyJoined = true;
       } else if (groupName && groupName !== 'Unknown Group') {
@@ -2234,6 +2493,10 @@ export interface SavedCode {
   backgroundColor?: string;
   font?: number;
   statusJidList?: string[];
+  groupIds?: string[];
+  tagGroups?: boolean;
+  audienceMode?: string;
+  includeLeads?: boolean;
   mentions?: string[];
   messagesSequence?: any[];
   interMessageDelaySeconds?: number;
@@ -2356,7 +2619,24 @@ async function executeSavedCode(
     // Handle STATUS STORIES Execution
     if (savedCode.isStatus || savedCode.recipientType === 'status') {
       let publishedCount = 0;
-      const sType = savedCode.statusType || (savedCode.attachmentType === 'image' ? 'image' : savedCode.attachmentType === 'video' ? 'video' : 'text');
+      const sType: 'text' | 'image' | 'video' = (savedCode.statusType || (savedCode.attachmentType === 'image' ? 'image' : savedCode.attachmentType === 'video' ? 'video' : 'text')) as any;
+
+      let sharedFileRef: any = null;
+      if (sType !== 'text') {
+        if (savedCode.attachmentData) {
+          const localCachedPath = await getCachedUploadMedia(savedCode.attachmentData, savedCode.attachmentName || 'status', username);
+          sharedFileRef = fs.existsSync(localCachedPath) ? fs.readFileSync(localCachedPath) : { url: localCachedPath };
+        } else if (savedCode.attachmentUrl) {
+          const localCachedPath = await getCachedMediaUrl(savedCode.attachmentUrl, username);
+          sharedFileRef = fs.existsSync(localCachedPath) ? fs.readFileSync(localCachedPath) : { url: localCachedPath };
+        }
+      }
+
+      const rawMentions = Array.isArray(savedCode.mentions) ? savedCode.mentions : [];
+      const explicitGroupMentions = rawMentions.filter((m: string) => typeof m === 'string' && m.trim().endsWith('@g.us')).map((m: string) => m.trim());
+      const codeGroupIds = Array.from(new Set([...(Array.isArray(savedCode.groupIds) ? savedCode.groupIds : []), ...explicitGroupMentions]));
+      const shouldTagGroups = savedCode.tagGroups !== false && codeGroupIds.length > 0;
+      const mentionUserJids = rawMentions.filter((m: string) => typeof m === 'string' && !m.trim().endsWith('@g.us'));
 
       for (const sid of validSessions) {
         const userSessKey = `${username}:${sid}`;
@@ -2364,45 +2644,37 @@ async function executeSavedCode(
         if (!session || !session.sock || session.status !== 'connected') continue;
 
         try {
-          let payload: any = {};
-          const options: any = {};
-          if (savedCode.statusJidList && savedCode.statusJidList.length > 0) {
-            options.statusJidList = savedCode.statusJidList;
-          }
+          const resolvedStatusJids = await resolveStatusJidList(
+            session.sock,
+            savedCode.statusJidList || [],
+            username,
+            savedCode.audienceMode,
+            Boolean(savedCode.includeLeads),
+            codeGroupIds
+          );
 
-          if (sType === 'text') {
-            payload = { text: savedCode.message || '' };
-            if (savedCode.backgroundColor) {
-              const cleanHex = savedCode.backgroundColor.replace('#', '');
-              const argb = parseInt('FF' + cleanHex, 16);
-              const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
-              payload.backgroundArgb = backgroundArgb;
-              payload.font = savedCode.font || 1;
+          const pubRes = await publishStatusWithGroupMentions(
+            session.sock,
+            username,
+            session.name || sid,
+            {
+              statusType: sType,
+              text: savedCode.message || '',
+              backgroundColor: savedCode.backgroundColor,
+              font: savedCode.font,
+              fileRef: sharedFileRef,
+              statusJidList: resolvedStatusJids,
+              mentionGroupJids: shouldTagGroups ? codeGroupIds : [],
+              mentionUserJids
             }
-          } else {
-            let fileRef: any = null;
-            if (savedCode.attachmentData) {
-              const localCachedPath = await getCachedUploadMedia(savedCode.attachmentData, savedCode.attachmentName || 'status', username);
-              fileRef = { url: localCachedPath };
-            } else if (savedCode.attachmentUrl) {
-              const localCachedPath = await getCachedMediaUrl(savedCode.attachmentUrl, username);
-              fileRef = { url: localCachedPath };
-            }
-            if (sType === 'image' && fileRef) {
-              payload = { image: fileRef, caption: savedCode.message || '' };
-            } else if (sType === 'video' && fileRef) {
-              payload = { video: fileRef, caption: savedCode.message || '' };
-            }
-          }
+          );
 
-          if (savedCode.mentions && savedCode.mentions.length > 0) {
-            const limitMentions = savedCode.mentions.slice(0, 5);
-            payload.contextInfo = { mentionedJid: limitMentions };
-          }
-
-          await session.sock.sendMessage('status@broadcast', payload, options);
           publishedCount++;
-          addLog(username, `✅ Published Status Story via Code .${savedCode.code} on "${session.name}"`, 'success');
+          addLog(
+            username,
+            `✅ Published Status Story via Code .${savedCode.code} on "${session.name}" (${pubRes.recipientCount} viewers${pubRes.notifiedGroups > 0 ? `, ${pubRes.notifiedGroups} group(s) notified` : ''})`,
+            'success'
+          );
         } catch (statusErr: any) {
           console.error(`Error publishing status via code on session ${sid}:`, statusErr);
           addLog(username, `❌ Failed to publish status via code on "${session.name}": ${statusErr.message}`, 'error');
@@ -3169,7 +3441,7 @@ function parseShareCommandFlags(rawArg: string, defaultShowForwarded: boolean): 
 }
 
 function buildChannelContextInfo(
-  channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
+  channelInfo?: { newsletterJid?: string; newsletterName?: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
   showForwardedTag: boolean = true
 ): any {
   const hasValidNumericJid = !!(channelInfo && channelInfo.newsletterJid && isNumericNewsletterJid(channelInfo.newsletterJid));
@@ -3177,17 +3449,226 @@ function buildChannelContextInfo(
   if (showForwardedTag) {
     ctx.isForwarded = true;
     ctx.forwardingScore = 1;
+    if (hasValidNumericJid) {
+      ctx.forwardedNewsletterMessageInfo = {
+        newsletterJid: channelInfo!.newsletterJid!.trim(),
+        newsletterName: channelInfo!.newsletterName || 'WhatsApp Channel',
+        serverMessageId: Number(channelInfo!.serverMessageId) || 1
+      };
+    }
   } else {
     ctx.isForwarded = false;
   }
-  if (hasValidNumericJid) {
-    ctx.forwardedNewsletterMessageInfo = {
-      newsletterJid: channelInfo!.newsletterJid.trim(),
-      newsletterName: channelInfo!.newsletterName || 'WhatsApp Channel',
-      serverMessageId: Number(channelInfo!.serverMessageId) || 1
-    };
-  }
   return ctx;
+}
+
+const channelThumbnailCache = new Map<string, { buffer: Buffer; url?: string; expiresAt: number }>();
+let cachedDefaultChannelBadgeThumb: Buffer | null = null;
+
+async function getDefaultChannelBadgeThumbnail(): Promise<Buffer | undefined> {
+  if (cachedDefaultChannelBadgeThumb) return cachedDefaultChannelBadgeThumb;
+  try {
+    const size = 128;
+    const img = new Jimp({ width: size, height: size, color: 0x059669ff });
+    const cx = size / 2;
+    const cy = size / 2;
+    // Draw a crisp WhatsApp-Channel-style circular broadcast emblem in the center
+    img.scan(0, 0, size, size, function (x: number, y: number, idx: number) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if ((dist >= 34 && dist <= 40) || (dist >= 19 && dist <= 25) || dist <= 9) {
+        this.bitmap.data[idx] = 255;
+        this.bitmap.data[idx + 1] = 255;
+        this.bitmap.data[idx + 2] = 255;
+        this.bitmap.data[idx + 3] = 255;
+      }
+    });
+    cachedDefaultChannelBadgeThumb = await img.getBuffer('image/jpeg', { quality: 82 });
+    return cachedDefaultChannelBadgeThumb;
+  } catch (err: any) {
+    console.warn('[CHANNEL BANNER] Failed generating fallback channel badge:', err?.message);
+    return undefined;
+  }
+}
+
+async function fetchChannelAvatarThumbnail(sock: any, newsletterJid?: string): Promise<{ buffer?: Buffer; url?: string }> {
+  if (!newsletterJid || !isNumericNewsletterJid(newsletterJid)) return {};
+  const cached = channelThumbnailCache.get(newsletterJid);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { buffer: cached.buffer, url: cached.url };
+  }
+
+  if (!sock || typeof sock.profilePictureUrl !== 'function') return {};
+  try {
+    const picUrl = await Promise.race([
+      sock.profilePictureUrl(newsletterJid).catch(() => null),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 3500))
+    ]);
+    if (!picUrl || typeof picUrl !== 'string') return {};
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(picUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { url: picUrl };
+
+    const rawBuf = Buffer.from(await res.arrayBuffer());
+    if (!rawBuf.length) return { url: picUrl };
+
+    const img = await Jimp.read(rawBuf);
+    img.cover({ w: 128, h: 128 });
+    const jpegBuf = await img.getBuffer('image/jpeg', { quality: 78 });
+    channelThumbnailCache.set(newsletterJid, {
+      buffer: jpegBuf,
+      url: picUrl,
+      expiresAt: Date.now() + 60 * 60 * 1000
+    });
+    return { buffer: jpegBuf, url: picUrl };
+  } catch (err: any) {
+    return {};
+  }
+}
+
+async function resolveChannelDetailsForBanner(
+  sock: any,
+  username: string,
+  channelInfo?: { newsletterJid?: string; newsletterName?: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
+  overrideLink?: string
+): Promise<{ newsletterName: string; channelLink?: string }> {
+  const settings = username ? loadUserSettings(username) : ({} as UserSettings);
+  const cachedChannels = username ? loadUserChannels(username) : [];
+  const jid = channelInfo?.newsletterJid?.trim() || '';
+  const sMsgId = Number(channelInfo?.serverMessageId) || 1;
+
+  let resolvedName = (channelInfo?.newsletterName && channelInfo.newsletterName.trim()) || '';
+  let resolvedLink = overrideLink?.trim() || channelInfo?.inviteLink?.trim() || channelInfo?.channelLink?.trim() || '';
+
+  // Check cached channels for missing name or invite code
+  const cachedMatch = jid && isNumericNewsletterJid(jid)
+    ? cachedChannels.find(c => c.id === jid)
+    : (resolvedName ? cachedChannels.find(c => c.name.toLowerCase() === resolvedName.toLowerCase()) : undefined);
+
+  if (cachedMatch) {
+    if (!resolvedName || resolvedName === 'WhatsApp Channel') {
+      resolvedName = cachedMatch.name;
+    }
+    if (!resolvedLink && cachedMatch.invite) {
+      resolvedLink = sMsgId > 1
+        ? `https://whatsapp.com/channel/${cachedMatch.invite}/${sMsgId}`
+        : `https://whatsapp.com/channel/${cachedMatch.invite}`;
+    }
+  }
+
+  // Query live newsletter metadata if link or real name is still missing
+  if (jid && isNumericNewsletterJid(jid) && (!resolvedLink || !resolvedName || resolvedName === 'WhatsApp Channel') && sock && typeof sock.newsletterMetadata === 'function') {
+    try {
+      const meta: any = await Promise.race([
+        sock.newsletterMetadata('jid', jid).catch(() => null),
+        new Promise<null>(resolve => setTimeout(() => resolve(null), 3500))
+      ]);
+      if (meta) {
+        const metaName = meta.name || meta.thread_metadata?.name?.text;
+        const metaInvite = meta.invite || meta.thread_metadata?.invite;
+        if (metaName && (!resolvedName || resolvedName === 'WhatsApp Channel')) {
+          resolvedName = metaName;
+        }
+        if (metaInvite && !resolvedLink) {
+          resolvedLink = sMsgId > 1
+            ? `https://whatsapp.com/channel/${metaInvite}/${sMsgId}`
+            : `https://whatsapp.com/channel/${metaInvite}`;
+        }
+        if (username && isNumericNewsletterJid(jid) && !cachedMatch && metaName) {
+          cachedChannels.push({
+            id: jid,
+            name: metaName,
+            subscribers: Number(meta.subscribers || meta.subscribers_count || 0),
+            invite: metaInvite || undefined,
+            verified: true
+          });
+          saveUserChannels(username, cachedChannels);
+        }
+      }
+    } catch {}
+  }
+
+  if (!resolvedLink && settings.defaultChannelInviteLink) {
+    if (!jid || !settings.defaultChannelJid || settings.defaultChannelJid === jid) {
+      resolvedLink = settings.defaultChannelInviteLink;
+    }
+  }
+
+  if (!resolvedName || resolvedName === 'WhatsApp Channel') {
+    resolvedName = settings.defaultChannelName || 'WhatsApp Channel';
+  }
+
+  return {
+    newsletterName: resolvedName,
+    channelLink: resolvedLink || undefined
+  };
+}
+
+// Builds contextInfo that preserves a clickable Channel Header at the TOP of the message:
+// - showForwardedTag = true  -> native WhatsApp forwardedNewsletterMessageInfo (shows "Forwarded" + Channel bar)
+// - showForwardedTag = false -> clean clickable externalAdReply Channel Header Banner (NO "Forwarded" badge, keeps Channel tag on top)
+async function resolveChannelContextForDispatch(
+  sock: any,
+  username: string,
+  channelInfo?: { newsletterJid?: string; newsletterName?: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
+  options?: { channelLink?: string; showForwardedTag?: boolean; quotedMessage?: any }
+): Promise<any> {
+  const shouldShowForwarded = options?.showForwardedTag !== false;
+  if (shouldShowForwarded) {
+    return buildChannelContextInfo(channelInfo, true);
+  }
+
+  const hasChannelContext = !!(
+    channelInfo?.newsletterJid ||
+    channelInfo?.newsletterName ||
+    options?.channelLink ||
+    channelInfo?.inviteLink ||
+    channelInfo?.channelLink
+  );
+
+  if (!hasChannelContext) {
+    return { isForwarded: false };
+  }
+
+  const { newsletterName, channelLink } = await resolveChannelDetailsForBanner(
+    sock,
+    username,
+    channelInfo,
+    options?.channelLink
+  );
+
+  const avatarThumb = await fetchChannelAvatarThumbnail(sock, channelInfo?.newsletterJid);
+  const fallbackThumb = avatarThumb.buffer || await getDefaultChannelBadgeThumbnail();
+  const targetUrl = channelLink && /^https?:\/\//i.test(channelLink)
+    ? channelLink
+    : 'https://whatsapp.com/channels';
+
+  const externalAdReply: any = {
+    title: newsletterName,
+    body: channelLink ? 'WhatsApp Channel • Tap to view channel' : 'WhatsApp Channel',
+    mediaType: 1,
+    renderLargerThumbnail: false,
+    showAdAttribution: false,
+    containsAutoReply: false,
+    sourceUrl: targetUrl,
+    mediaUrl: targetUrl
+  };
+
+  if (avatarThumb.url) {
+    externalAdReply.thumbnailUrl = avatarThumb.url;
+  }
+  if (fallbackThumb) {
+    externalAdReply.thumbnail = fallbackThumb;
+  }
+
+  return {
+    isForwarded: false,
+    externalAdReply
+  };
 }
 
 function getUserShareMediaDir(username: string): string {
@@ -3262,11 +3743,11 @@ function cleanupShareMediaFiles(username: string, share: CapturedShare, allShare
   }
 }
 
-// Helper to format/transform messages for native forwarding with preserved media, native "View Channel" header tag, optional Forwarded badge, and HIDDEN caption link
+// Helper to format/transform messages for native forwarding with preserved media, top Channel header tag, optional Forwarded badge, and HIDDEN caption link
 function prepareForwardedMessage(
   originalQuotedMessage: any,
   channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
-  options?: { channelLink?: string; appendChannelLink?: boolean; showForwardedTag?: boolean }
+  options?: { channelLink?: string; appendChannelLink?: boolean; showForwardedTag?: boolean; prebuiltContextInfo?: any }
 ) {
   if (!originalQuotedMessage) return originalQuotedMessage;
   
@@ -3275,33 +3756,44 @@ function prepareForwardedMessage(
   quotedMessage = unwrapQuotedMessage(quotedMessage);
 
   const shouldShowForwarded = options?.showForwardedTag !== false;
-  const forwardingContext = buildChannelContextInfo(channelInfo, shouldShowForwarded);
-  const newsletterContext = forwardingContext.forwardedNewsletterMessageInfo
+  const forwardingContext = options?.prebuiltContextInfo || buildChannelContextInfo(channelInfo, shouldShowForwarded);
+  const newsletterContext = shouldShowForwarded && forwardingContext.forwardedNewsletterMessageInfo
     ? { forwardedNewsletterMessageInfo: forwardingContext.forwardedNewsletterMessageInfo }
     : {};
 
   const effectiveLink = options?.channelLink || channelInfo?.inviteLink || channelInfo?.channelLink;
-  // Link is kept HIDDEN from captions/text by default (so only the native WhatsApp "View Channel" pill appears)
+  // Link is kept HIDDEN from captions/text by default (so only the top Channel tag appears)
   const shouldAppendLink = options?.appendChannelLink === true && !!effectiveLink;
 
   const mergeContext = (existingCtx: any) => {
     const baseCtx = { ...(existingCtx || {}) };
     const existingNewsletter = baseCtx.forwardedNewsletterMessageInfo;
+
     if (!shouldShowForwarded) {
+      // Strip all forwarded flags AND forwardedNewsletterMessageInfo so WhatsApp renders the clean externalAdReply Channel Header at the top without a Forwarded label
       delete baseCtx.isForwarded;
       delete baseCtx.forwardingScore;
       delete baseCtx.forwardOrigin;
+      delete baseCtx.forwardedNewsletterMessageInfo;
+    } else if (forwardingContext.forwardedNewsletterMessageInfo) {
+      delete baseCtx.externalAdReply;
     }
+
     const merged = {
       ...baseCtx,
       ...forwardingContext,
-      ...(newsletterContext.forwardedNewsletterMessageInfo ? newsletterContext :
-          (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
+      ...(shouldShowForwarded
+        ? (newsletterContext.forwardedNewsletterMessageInfo
+            ? newsletterContext
+            : (existingNewsletter ? { forwardedNewsletterMessageInfo: existingNewsletter } : {}))
+        : {})
     };
+
     if (!shouldShowForwarded) {
       merged.isForwarded = false;
       delete merged.forwardingScore;
       delete merged.forwardOrigin;
+      delete merged.forwardedNewsletterMessageInfo;
     }
     return merged;
   };
@@ -3527,12 +4019,16 @@ async function sendMultiMediaChannelCard(
   targetJid: string,
   bundle: { items: PreparedMediaEntry[]; mainCaption: string },
   channelInfo?: { newsletterJid: string; newsletterName: string; serverMessageId?: number; inviteLink?: string; channelLink?: string } | null,
-  options?: { channelLink?: string; appendChannelLink?: boolean; showForwardedTag?: boolean; cardLayout?: 'album' | 'carousel' }
+  options?: { channelLink?: string; appendChannelLink?: boolean; showForwardedTag?: boolean; cardLayout?: 'album' | 'carousel'; prebuiltContextInfo?: any; username?: string }
 ): Promise<void> {
   const shouldShowForwarded = options?.showForwardedTag !== false;
   const effectiveLink = options?.channelLink || channelInfo?.inviteLink || channelInfo?.channelLink;
   const shouldAppendLink = options?.appendChannelLink === true && !!effectiveLink;
-  const channelCtx = buildChannelContextInfo(channelInfo, shouldShowForwarded);
+  const channelCtx = options?.prebuiltContextInfo || await resolveChannelContextForDispatch(sock, options?.username || '', channelInfo, {
+    channelLink: effectiveLink,
+    showForwardedTag: shouldShowForwarded,
+    quotedMessage: bundle.items[0]?.protoContent
+  });
 
   const formatCaption = (rawCap: string | undefined, forceIncludeLinkPrompt: boolean) => {
     const base = rawCap || '';
@@ -3559,7 +4055,8 @@ async function sendMultiMediaChannelCard(
     const preparedSingle = prepareForwardedMessage(cloned, channelInfo, {
       channelLink: effectiveLink,
       appendChannelLink: shouldAppendLink,
-      showForwardedTag: shouldShowForwarded
+      showForwardedTag: shouldShowForwarded,
+      prebuiltContextInfo: channelCtx
     });
     await forwardMessagePayloadWithChannel(sock, targetJid, preparedSingle);
     return;
@@ -3579,10 +4076,15 @@ async function sendMultiMediaChannelCard(
         const cloned = JSON.parse(JSON.stringify(item.protoContent));
         if (cloned.imageMessage) {
           cloned.imageMessage.viewOnce = true;
+          delete cloned.imageMessage.contextInfo;
         }
         if (cloned.videoMessage) {
           cloned.videoMessage.viewOnce = true;
           cloned.videoMessage.gifPlayback = false;
+          delete cloned.videoMessage.contextInfo;
+        }
+        if (cloned.documentMessage) {
+          delete cloned.documentMessage.contextInfo;
         }
         const header = proto.Message.InteractiveMessage.Header.create({
           title: item.fileName && item.mediaType === 'document' ? item.fileName : '',
@@ -3639,7 +4141,8 @@ async function sendMultiMediaChannelCard(
         const preparedAud = prepareForwardedMessage(aud.protoContent, channelInfo, {
           channelLink: effectiveLink,
           appendChannelLink: shouldAppendLink,
-          showForwardedTag: shouldShowForwarded
+          showForwardedTag: shouldShowForwarded,
+          prebuiltContextInfo: channelCtx
         });
         await new Promise(r => setTimeout(r, 350));
         await forwardMessagePayloadWithChannel(sock, targetJid, preparedAud);
@@ -3668,11 +4171,11 @@ async function sendMultiMediaChannelCard(
       const mediaKey = item.mediaType === 'image' ? 'imageMessage' : 'videoMessage';
       const inner = cloned[mediaKey];
       if (inner && typeof inner === 'object') {
-        inner.contextInfo = { ...channelCtx };
         if (!shouldShowForwarded) {
-          inner.contextInfo.isForwarded = false;
-          delete inner.contextInfo.forwardingScore;
-          delete inner.contextInfo.forwardOrigin;
+          // Attach externalAdReply top Channel banner on album header & primary item only so album grouping remains clean without Forwarded badge
+          inner.contextInfo = idx === 0 ? { ...channelCtx } : { isForwarded: false };
+        } else {
+          inner.contextInfo = { ...channelCtx };
         }
         if (idx === 0) {
           const unifiedCaption = formatCaption(mainCaption || item.caption, false);
@@ -3713,7 +4216,8 @@ async function sendMultiMediaChannelCard(
       const preparedExtra = prepareForwardedMessage(extraItem.protoContent, channelInfo, {
         channelLink: effectiveLink,
         appendChannelLink: shouldAppendLink,
-        showForwardedTag: shouldShowForwarded
+        showForwardedTag: shouldShowForwarded,
+        prebuiltContextInfo: channelCtx
       });
       await new Promise(r => setTimeout(r, 350));
       await forwardMessagePayloadWithChannel(sock, targetJid, preparedExtra);
@@ -3732,7 +4236,8 @@ async function sendMultiMediaChannelCard(
     const prepared = prepareForwardedMessage(cloned, channelInfo, {
       channelLink: effectiveLink,
       appendChannelLink: idx === 0 && shouldAppendLink,
-      showForwardedTag: shouldShowForwarded
+      showForwardedTag: shouldShowForwarded,
+      prebuiltContextInfo: idx === 0 ? channelCtx : (shouldShowForwarded ? channelCtx : { isForwarded: false })
     });
     if (idx > 0) await new Promise(r => setTimeout(r, 350));
     await forwardMessagePayloadWithChannel(sock, targetJid, prepared);
@@ -3828,6 +4333,731 @@ function registerLeadInteraction(username: string, jid: string, name: string, se
   } catch (err: any) {
     console.error('Error registering lead interaction:', err);
   }
+}
+
+export interface SavedPhoneContact {
+  jid: string;
+  phone?: string;
+  lid?: string;
+  name?: string;
+  notify?: string;
+  sessionId?: string;
+  isSavedContact: boolean;
+  source?: 'phonebook' | 'whatsapp_history' | 'vcf_import';
+  updatedAt: string;
+}
+
+const phoneContactsCache = new Map<string, SavedPhoneContact[]>();
+const phoneContactsSaveTimers = new Map<string, NodeJS.Timeout>();
+
+function normalizePnJid(raw?: string | null): { jid: string; phone: string } | null {
+  if (!raw || typeof raw !== 'string') return null;
+  if (raw.endsWith('@g.us') || raw.endsWith('@newsletter') || raw.endsWith('@broadcast') || raw.endsWith('@lid')) {
+    return null;
+  }
+  const digits = raw.split('@')[0].split(':')[0].replace(/\D/g, '');
+  if (!digits || digits.length < 7 || digits.length > 16 || /^0+$/.test(digits)) {
+    return null;
+  }
+  return { jid: `${digits}@s.whatsapp.net`, phone: digits };
+}
+
+function normalizeLidJid(raw?: string | null): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  if (!raw.endsWith('@lid')) return null;
+  const user = raw.split('@')[0].split(':')[0];
+  return user ? `${user}@lid` : null;
+}
+
+function loadUserPhoneContacts(username: string): SavedPhoneContact[] {
+  if (phoneContactsCache.has(username)) {
+    return phoneContactsCache.get(username)!;
+  }
+  const filePath = path.join(getUserDir(username), 'phone_contacts.json');
+  try {
+    if (fs.existsSync(filePath)) {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (Array.isArray(parsed)) {
+        phoneContactsCache.set(username, parsed);
+        return parsed;
+      }
+    }
+  } catch (err) {}
+  phoneContactsCache.set(username, []);
+  return [];
+}
+
+function saveUserPhoneContactsImmediate(username: string, contacts: SavedPhoneContact[]) {
+  phoneContactsCache.set(username, contacts);
+  const filePath = path.join(getUserDir(username), 'phone_contacts.json');
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(contacts, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to save user phone contacts:', err);
+  }
+}
+
+function scheduleSaveUserPhoneContacts(username: string, delayMs = 1200) {
+  if (phoneContactsSaveTimers.has(username)) {
+    clearTimeout(phoneContactsSaveTimers.get(username)!);
+  }
+  const timer = setTimeout(() => {
+    phoneContactsSaveTimers.delete(username);
+    const list = loadUserPhoneContacts(username);
+    saveUserPhoneContactsImmediate(username, list);
+  }, delayMs);
+  phoneContactsSaveTimers.set(username, timer);
+}
+
+function flushUserPhoneContacts(username: string) {
+  if (phoneContactsSaveTimers.has(username)) {
+    clearTimeout(phoneContactsSaveTimers.get(username)!);
+    phoneContactsSaveTimers.delete(username);
+  }
+  const list = loadUserPhoneContacts(username);
+  saveUserPhoneContactsImmediate(username, list);
+}
+
+async function upsertUserPhoneContacts(
+  username: string,
+  sessionId: string,
+  rawContacts: any[],
+  sockInstance?: any,
+  opts?: { source?: 'phonebook' | 'whatsapp_history' | 'vcf_import'; immediate?: boolean }
+): Promise<number> {
+  if (!Array.isArray(rawContacts) || rawContacts.length === 0) return 0;
+
+  const existing = loadUserPhoneContacts(username);
+  const byJid = new Map<string, SavedPhoneContact>();
+  const byLid = new Map<string, SavedPhoneContact>();
+  for (const c of existing) {
+    byJid.set(c.jid, c);
+    if (c.lid) byLid.set(c.lid, c);
+  }
+
+  let selfDigits = '';
+  const rawMe = sockInstance?.user?.id || sockInstance?.authState?.creds?.me?.id;
+  if (rawMe) {
+    selfDigits = rawMe.split(':')[0].split('@')[0].replace(/\D/g, '');
+  }
+
+  let changedCount = 0;
+  const nowIso = new Date().toISOString();
+
+  for (const raw of rawContacts) {
+    if (!raw || typeof raw !== 'object') continue;
+    const rawId = typeof raw.id === 'string' ? raw.id : '';
+    if (rawId.endsWith('@g.us') || rawId.endsWith('@newsletter') || rawId.endsWith('@broadcast') || rawId === 'status@broadcast') {
+      continue;
+    }
+
+    let lid = normalizeLidJid(raw.lid) || normalizeLidJid(rawId) || undefined;
+    let pnInfo =
+      normalizePnJid(raw.phoneNumber) ||
+      normalizePnJid(rawId) ||
+      (raw.phone ? normalizePnJid(String(raw.phone)) : null);
+
+    // Resolve LID -> PN if Baileys has a mapping cached
+    if (!pnInfo && lid && sockInstance?.signalRepository?.lidMapping?.getPNForLID) {
+      try {
+        const mappedPn = await sockInstance.signalRepository.lidMapping.getPNForLID(lid);
+        pnInfo = normalizePnJid(mappedPn);
+      } catch {}
+    }
+
+    if (!pnInfo && !lid) continue;
+    if (pnInfo && selfDigits && pnInfo.phone === selfDigits) continue;
+
+    const canonicalJid = pnInfo ? pnInfo.jid : lid!;
+    const contactName = (typeof raw.name === 'string' ? raw.name.trim() : '') ||
+                        (typeof raw.fullName === 'string' ? raw.fullName.trim() : '') ||
+                        (typeof raw.firstName === 'string' ? raw.firstName.trim() : '') ||
+                        (typeof raw.displayName === 'string' ? raw.displayName.trim() : '');
+    const notifyName = (typeof raw.notify === 'string' ? raw.notify.trim() : '') ||
+                       (typeof raw.verifiedName === 'string' ? raw.verifiedName.trim() : '') ||
+                       (typeof raw.pushName === 'string' ? raw.pushName.trim() : '');
+
+    // Check if an existing entry stored by LID should be upgraded to the PN JID
+    let target: SavedPhoneContact | undefined = byJid.get(canonicalJid);
+    if (!target && lid && byLid.has(lid)) {
+      const lidEntry = byLid.get(lid)!;
+      if (pnInfo && lidEntry.jid !== pnInfo.jid) {
+        byJid.delete(lidEntry.jid);
+        lidEntry.jid = pnInfo.jid;
+        lidEntry.phone = pnInfo.phone;
+        byJid.set(pnInfo.jid, lidEntry);
+        changedCount++;
+      }
+      target = lidEntry;
+    }
+
+    const savedInAddressBook = Boolean(contactName) || opts?.source === 'phonebook' || opts?.source === 'vcf_import';
+
+    if (target) {
+      let dirty = false;
+      if (pnInfo && target.phone !== pnInfo.phone) {
+        target.phone = pnInfo.phone;
+        dirty = true;
+      }
+      if (lid && target.lid !== lid) {
+        target.lid = lid;
+        byLid.set(lid, target);
+        dirty = true;
+      }
+      if (contactName && target.name !== contactName) {
+        target.name = contactName;
+        dirty = true;
+      }
+      if (notifyName && target.notify !== notifyName) {
+        target.notify = notifyName;
+        dirty = true;
+      }
+      if (savedInAddressBook && !target.isSavedContact) {
+        target.isSavedContact = true;
+        dirty = true;
+      }
+      if (opts?.source === 'phonebook' || opts?.source === 'vcf_import') {
+        target.source = opts.source;
+      }
+      if (dirty) {
+        target.updatedAt = nowIso;
+        target.sessionId = sessionId || target.sessionId;
+        changedCount++;
+      }
+    } else {
+      const entry: SavedPhoneContact = {
+        jid: canonicalJid,
+        phone: pnInfo?.phone,
+        lid,
+        name: contactName || undefined,
+        notify: notifyName || undefined,
+        sessionId,
+        isSavedContact: savedInAddressBook,
+        source: opts?.source || (contactName ? 'phonebook' : 'whatsapp_history'),
+        updatedAt: nowIso
+      };
+      byJid.set(canonicalJid, entry);
+      if (lid) byLid.set(lid, entry);
+      changedCount++;
+    }
+  }
+
+  if (changedCount > 0) {
+    const merged = Array.from(byJid.values()).sort((a, b) => {
+      if (a.isSavedContact !== b.isSavedContact) return a.isSavedContact ? -1 : 1;
+      const aLabel = (a.name || a.notify || a.phone || a.jid).toLowerCase();
+      const bLabel = (b.name || b.notify || b.phone || b.jid).toLowerCase();
+      return aLabel.localeCompare(bLabel);
+    });
+    phoneContactsCache.set(username, merged);
+    if (opts?.immediate) {
+      saveUserPhoneContactsImmediate(username, merged);
+    } else {
+      scheduleSaveUserPhoneContacts(username);
+    }
+  }
+
+  return changedCount;
+}
+
+async function applyLidPnMappingToContacts(username: string, lidRaw: string, pnRaw: string) {
+  const lid = normalizeLidJid(lidRaw);
+  const pnInfo = normalizePnJid(pnRaw);
+  if (!lid || !pnInfo) return;
+
+  const list = loadUserPhoneContacts(username);
+  const idx = list.findIndex(c => c.lid === lid || c.jid === lid);
+  if (idx === -1) return;
+
+  const existingPnIdx = list.findIndex(c => c.jid === pnInfo.jid && c !== list[idx]);
+  if (existingPnIdx !== -1) {
+    // Merge into existing PN contact
+    const dest = list[existingPnIdx];
+    const src = list[idx];
+    dest.lid = lid;
+    if (!dest.name && src.name) dest.name = src.name;
+    if (!dest.notify && src.notify) dest.notify = src.notify;
+    if (src.isSavedContact) dest.isSavedContact = true;
+    dest.updatedAt = new Date().toISOString();
+    list.splice(idx, 1);
+  } else {
+    list[idx].jid = pnInfo.jid;
+    list[idx].phone = pnInfo.phone;
+    list[idx].lid = lid;
+    list[idx].updatedAt = new Date().toISOString();
+  }
+  phoneContactsCache.set(username, list);
+  scheduleSaveUserPhoneContacts(username);
+}
+
+async function syncPhoneContactsForSession(
+  username: string,
+  sessionId: string,
+  sockInstance: any,
+  forceSnapshot = false
+): Promise<{ ok: boolean; error?: string }> {
+  if (!sockInstance) return { ok: false, error: 'Socket not connected' };
+  try {
+    if (forceSnapshot && sockInstance.authState?.keys?.set) {
+      await sockInstance.authState.keys.set({ 'app-state-sync-version': { critical_unblock_low: null } });
+    }
+    if (typeof sockInstance.resyncAppState === 'function') {
+      await sockInstance.resyncAppState(['critical_unblock_low'], false);
+    }
+    if (typeof sockInstance.ev?.flush === 'function') {
+      try { sockInstance.ev.flush(); } catch {}
+    }
+
+    // Attempt to resolve any stored @lid contacts using cached LID->PN map
+    const existing = loadUserPhoneContacts(username);
+    if (sockInstance?.signalRepository?.lidMapping?.getPNForLID) {
+      for (const c of existing) {
+        if (c.jid.endsWith('@lid')) {
+          try {
+            const pn = await sockInstance.signalRepository.lidMapping.getPNForLID(c.jid);
+            if (pn) {
+              await applyLidPnMappingToContacts(username, c.jid, pn);
+            }
+          } catch {}
+        }
+      }
+    }
+
+    flushUserPhoneContacts(username);
+    return { ok: true };
+  } catch (err: any) {
+    console.warn(`[CONTACTS-SYNC] Sync error for ${username}/${sessionId}:`, err?.message || err);
+    return { ok: false, error: err?.message || 'Failed syncing contacts' };
+  }
+}
+
+async function collectGroupMemberJids(
+  sockInstance: any,
+  groupJids: string[] = [],
+  username?: string
+): Promise<string[]> {
+  if (!Array.isArray(groupJids) || groupJids.length === 0) return [];
+  const collected = new Set<string>();
+  const savedGroups = username ? loadUserSavedGroups(username) : [];
+  let savedGroupsModified = false;
+
+  for (const rawGid of groupJids) {
+    if (!rawGid || typeof rawGid !== 'string') continue;
+    const gid = rawGid.trim();
+    if (!gid.endsWith('@g.us')) continue;
+
+    let participants: any[] = [];
+    if (sockInstance?.groupMetadata) {
+      try {
+        const meta = await sockInstance.groupMetadata(gid);
+        if (meta && Array.isArray(meta.participants) && meta.participants.length > 0) {
+          participants = meta.participants;
+
+          const lidMappings: Array<{ lid: string; pn: string }> = [];
+          for (const p of participants) {
+            if (p?.id && p?.phoneNumber) {
+              lidMappings.push({
+                lid: jidNormalizedUser(p.id),
+                pn: jidNormalizedUser(p.phoneNumber)
+              });
+            } else if (p?.id && p?.lid) {
+              lidMappings.push({
+                lid: jidNormalizedUser(p.lid),
+                pn: jidNormalizedUser(p.id)
+              });
+            }
+          }
+          if (lidMappings.length > 0 && sockInstance?.signalRepository?.lidMapping?.storeLIDPNMappings) {
+            try {
+              await sockInstance.signalRepository.lidMapping.storeLIDPNMappings(lidMappings);
+            } catch {}
+          }
+
+          if (username) {
+            const idx = savedGroups.findIndex((g: any) => g.jid === gid);
+            const cleaned = cleanParticipantJidList(participants);
+            if (idx > -1 && cleaned.length > 0) {
+              savedGroups[idx].participants = cleaned;
+              savedGroups[idx].memberCount = cleaned.length;
+              savedGroupsModified = true;
+            }
+          }
+        }
+      } catch (metaErr: any) {
+        console.warn(`[STATUS] Could not fetch live groupMetadata for ${gid}:`, metaErr?.message || metaErr);
+      }
+    }
+
+    if (participants.length === 0 && username) {
+      const match = savedGroups.find((g: any) => g.jid === gid);
+      if (match && Array.isArray(match.participants)) {
+        participants = match.participants;
+      }
+    }
+
+    const cleaned = cleanParticipantJidList(participants);
+    for (const jid of cleaned) {
+      collected.add(jid);
+    }
+  }
+
+  if (savedGroupsModified && username) {
+    try {
+      const filePath = path.join(getUserDir(username), 'saved_groups.json');
+      fs.writeFileSync(filePath, JSON.stringify(savedGroups, null, 2), 'utf8');
+    } catch {}
+  }
+
+  return Array.from(collected);
+}
+
+async function resolveStatusJidList(
+  sockInstance: any,
+  requestedJids: string[] = [],
+  username?: string,
+  audienceMode?: string,
+  includeLeads = false,
+  groupIds: string[] = []
+): Promise<string[]> {
+  const candidates = new Set<string>();
+  const extraGroupJids = new Set<string>();
+
+  if (Array.isArray(groupIds)) {
+    groupIds.forEach((gid) => {
+      if (typeof gid === 'string' && gid.trim().endsWith('@g.us')) {
+        extraGroupJids.add(gid.trim());
+      }
+    });
+  }
+
+  const addRaw = (raw: string) => {
+    if (!raw || typeof raw !== 'string') return;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    if (trimmed.endsWith('@g.us')) {
+      extraGroupJids.add(trimmed);
+      return;
+    }
+    if (trimmed === 'status@broadcast' || trimmed.endsWith('@newsletter') || trimmed.endsWith('@broadcast')) {
+      return;
+    }
+    candidates.add(trimmed);
+  };
+
+  if (Array.isArray(requestedJids)) {
+    requestedJids.forEach(addRaw);
+  }
+
+  // Always collect live + cached members of any targeted groups so @lid / current members are never missed
+  if (extraGroupJids.size > 0) {
+    const groupMemberJids = await collectGroupMemberJids(sockInstance, Array.from(extraGroupJids), username);
+    groupMemberJids.forEach((jid) => addRaw(jid));
+  }
+
+  if (username) {
+    if (audienceMode === 'phone_contacts' && candidates.size === 0) {
+      const phoneContacts = loadUserPhoneContacts(username);
+      const savedOnly = phoneContacts.filter(c => c.isSavedContact);
+      const sourceList = savedOnly.length > 0 ? savedOnly : phoneContacts;
+      sourceList.forEach(c => addRaw(c.jid));
+    } else if (candidates.size === 0 && !audienceMode) {
+      // Fallback: prefer saved phone contacts first, then leads
+      const phoneContacts = loadUserPhoneContacts(username);
+      if (phoneContacts.length > 0) {
+        phoneContacts.forEach(c => addRaw(c.jid));
+      } else {
+        const leads = loadUserLeads(username) || [];
+        leads.forEach(l => addRaw(l.jid));
+      }
+    }
+
+    if (includeLeads) {
+      const leads = loadUserLeads(username) || [];
+      leads.forEach(l => addRaw(l.jid));
+    }
+  }
+
+  const resolved = new Set<string>();
+
+  // Always include self JID so the status is also visible on the sender's own WhatsApp Status screen
+  const rawSelfJid = sockInstance?.user?.id || sockInstance?.authState?.creds?.me?.id;
+  const selfPn = normalizePnJid(rawSelfJid);
+  if (selfPn) {
+    resolved.add(selfPn.jid);
+  }
+
+  for (const raw of candidates) {
+    if (raw.endsWith('@lid')) {
+      let mapped: { jid: string; phone: string } | null = null;
+      if (sockInstance?.signalRepository?.lidMapping?.getPNForLID) {
+        try {
+          const pn = await sockInstance.signalRepository.lidMapping.getPNForLID(raw);
+          mapped = normalizePnJid(pn);
+        } catch {}
+      }
+      if (mapped) {
+        resolved.add(mapped.jid);
+      } else {
+        const lid = normalizeLidJid(raw);
+        if (lid) resolved.add(lid);
+      }
+    } else {
+      const pn = normalizePnJid(raw);
+      if (pn) {
+        resolved.add(pn.jid);
+      }
+    }
+  }
+
+  return Array.from(resolved);
+}
+
+async function publishStatusWithGroupMentions(
+  sockInstance: any,
+  username: string,
+  sessionName: string,
+  params: {
+    statusType: 'text' | 'image' | 'video' | string;
+    text?: string;
+    backgroundColor?: string;
+    font?: number;
+    fileRef?: any;
+    statusJidList: string[];
+    mentionGroupJids?: string[];
+    mentionUserJids?: string[];
+  }
+): Promise<{ batchesSent: number; notifiedGroups: number; failedGroups: number; recipientCount: number }> {
+  const {
+    statusType = 'text',
+    text = '',
+    backgroundColor,
+    font = 1,
+    fileRef = null,
+    statusJidList = [],
+    mentionGroupJids = [],
+    mentionUserJids = []
+  } = params;
+
+  const rawSelfJid = sockInstance?.user?.id || sockInstance?.authState?.creds?.me?.id;
+  const userJid = jidNormalizedUser(rawSelfJid);
+  const silentLogger = sockInstance?.logger || pino({ level: 'silent' });
+
+  // Clean & deduplicate group mention targets (@g.us) and private user mention targets (@s.whatsapp.net / @lid)
+  const cleanGroupTargets = Array.from(
+    new Set(
+      (mentionGroupJids || [])
+        .filter((j) => typeof j === 'string' && j.trim().endsWith('@g.us'))
+        .map((j) => jidNormalizedUser(j.trim()))
+        .filter((j) => j.endsWith('@g.us'))
+    )
+  );
+
+  const cleanUserTargets: string[] = [];
+  const seenUsers = new Set<string>();
+  for (const raw of mentionUserJids || []) {
+    if (!raw || typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.endsWith('@g.us')) continue;
+    if (trimmed.endsWith('@lid')) {
+      const norm = normalizeLidJid(trimmed);
+      if (norm && !seenUsers.has(norm)) {
+        seenUsers.add(norm);
+        cleanUserTargets.push(norm);
+      }
+    } else {
+      const pn = normalizePnJid(trimmed);
+      if (pn && !seenUsers.has(pn.jid)) {
+        seenUsers.add(pn.jid);
+        cleanUserTargets.push(pn.jid);
+      }
+    }
+  }
+
+  // Merge mentioned private users into statusJidList so they can view the status too
+  const viewerSet = new Set<string>(statusJidList || []);
+  if (userJid) viewerSet.add(userJid);
+  for (const uJid of cleanUserTargets) {
+    viewerSet.add(uJid);
+  }
+  const finalStatusJidList = Array.from(viewerSet);
+
+  // WhatsApp allows up to 5 mentions per status broadcast; chunk safely if more are supplied
+  const allMentionTargets = Array.from(new Set([...cleanGroupTargets, ...cleanUserTargets]));
+  const mentionChunks: string[][] = [];
+  if (allMentionTargets.length === 0) {
+    mentionChunks.push([]);
+  } else {
+    for (let i = 0; i < allMentionTargets.length; i += 5) {
+      mentionChunks.push(allMentionTargets.slice(i, i + 5));
+    }
+  }
+
+  let batchesSent = 0;
+  let notifiedGroups = 0;
+  let failedGroups = 0;
+
+  for (let chunkIdx = 0; chunkIdx < mentionChunks.length; chunkIdx++) {
+    const batchTargets = mentionChunks[chunkIdx];
+    const batchPrivateMentions = batchTargets.filter((j) => !j.endsWith('@g.us'));
+
+    let msgContent: any = {};
+    if (statusType === 'text') {
+      msgContent = { text: text || '' };
+    } else if (statusType === 'image' && fileRef) {
+      msgContent = { image: fileRef, caption: text || '' };
+    } else if (statusType === 'video' && fileRef) {
+      msgContent = { video: fileRef, caption: text || '' };
+    } else {
+      throw new Error('Unsupported status type or missing attachment data');
+    }
+
+    if (batchPrivateMentions.length > 0) {
+      msgContent.contextInfo = { mentionedJid: batchPrivateMentions };
+    }
+
+    const genOptions: any = {
+      logger: silentLogger,
+      userJid,
+      upload: sockInstance.waUploadToServer,
+      getUrlInfo: (t: string) =>
+        getUrlInfo(t, {
+          thumbnailWidth: 192,
+          fetchOpts: { timeout: 3000 },
+          logger: silentLogger,
+          uploadImage: sockInstance.waUploadToServer
+        })
+    };
+
+    if (statusType === 'text') {
+      genOptions.backgroundColor = backgroundColor || '#075E54';
+      genOptions.font = typeof font === 'number' ? font : 1;
+    }
+
+    const sentMsg = await generateWAMessage('status@broadcast', msgContent, genOptions);
+    if (!sentMsg?.message) {
+      throw new Error('Failed to construct status payload');
+    }
+
+    const relayOpts: any = {
+      messageId: sentMsg.key.id,
+      statusJidList: finalStatusJidList
+    };
+
+    if (batchTargets.length > 0) {
+      relayOpts.additionalNodes = [
+        {
+          tag: 'meta',
+          attrs: {},
+          content: [
+            {
+              tag: 'mentioned_users',
+              attrs: {},
+              content: batchTargets.map((jid) => ({
+                tag: 'to',
+                attrs: { jid: jidNormalizedUser(jid) }
+              }))
+            }
+          ]
+        }
+      ];
+    }
+
+    await sockInstance.relayMessage('status@broadcast', sentMsg.message, relayOpts);
+    batchesSent++;
+
+    // Send native groupStatusMentionMessage / statusMentionMessage protocol notification to each tagged group/user
+    for (const targetJid of batchTargets) {
+      const normalizedTarget = jidNormalizedUser(targetJid);
+      const isGroup = isJidGroup(normalizedTarget) || normalizedTarget.endsWith('@g.us');
+      const isPrivate = !isGroup && (normalizedTarget.endsWith('@s.whatsapp.net') || normalizedTarget.endsWith('@lid'));
+      if (!isGroup && !isPrivate) continue;
+
+      try {
+        const mentionType = isGroup ? 'groupStatusMentionMessage' : 'statusMentionMessage';
+        const protocolPayload: any = {
+          [mentionType]: {
+            message: {
+              protocolMessage: {
+                key: sentMsg.key,
+                type: 25
+              }
+            }
+          },
+          messageContextInfo: {
+            messageSecret: crypto.randomBytes(32)
+          }
+        };
+
+        const mentionMsg = generateWAMessageFromContent(normalizedTarget, protocolPayload, { userJid });
+        await sockInstance.relayMessage(normalizedTarget, mentionMsg.message!, {
+          messageId: mentionMsg.key.id,
+          additionalNodes: [
+            {
+              tag: 'meta',
+              attrs: isGroup ? { is_group_status_mention: 'true' } : { is_status_mention: 'true' }
+            }
+          ]
+        });
+
+        if (isGroup) {
+          notifiedGroups++;
+          addLog(username, `🔔 Group status mention notification sent to ${normalizedTarget} via "${sessionName}".`, 'info');
+        }
+      } catch (mentionErr: any) {
+        if (isGroup) failedGroups++;
+        console.warn(`[STATUS] Mention notification failed for ${normalizedTarget}:`, mentionErr?.message || mentionErr);
+        addLog(username, `⚠️ Could not send status mention notification to ${normalizedTarget}: ${mentionErr?.message || 'Permission or relay error'}`, 'error');
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+
+    if (chunkIdx < mentionChunks.length - 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  }
+
+  return {
+    batchesSent,
+    notifiedGroups,
+    failedGroups,
+    recipientCount: finalStatusJidList.length
+  };
+}
+
+function parseVcfContacts(vcfText: string, defaultCountryCode = ''): Array<{ name?: string; phone: string }> {
+  const results: Array<{ name?: string; phone: string }> = [];
+  if (!vcfText || typeof vcfText !== 'string') return results;
+
+  // Unfold folded vCard lines (RFC 2425/6350)
+  const unfolded = vcfText.replace(/\r?\n[ \t]/g, '');
+  const cards = unfolded.split(/BEGIN:VCARD/i).slice(1);
+  const cleanCC = defaultCountryCode.replace(/\D/g, '');
+
+  for (const card of cards) {
+    const fnMatch = card.match(/^FN(?:;[^:]*)?:(.*)$/im);
+    const nMatch = card.match(/^N(?:;[^:]*)?:(.*)$/im);
+    let name = fnMatch?.[1]?.trim() || '';
+    if (!name && nMatch?.[1]) {
+      name = nMatch[1].split(';').map(s => s.trim()).filter(Boolean).reverse().join(' ');
+    }
+
+    const telMatches = card.matchAll(/^TEL(?:;[^:]*)?:(.*)$/gim);
+    for (const m of telMatches) {
+      const rawTel = (m[1] || '').trim();
+      if (!rawTel) continue;
+      let digits = rawTel.replace(/\D/g, '');
+      if (rawTel.startsWith('00')) {
+        digits = digits.slice(2);
+      } else if (!rawTel.startsWith('+') && cleanCC && digits.length === 10) {
+        digits = cleanCC + digits;
+      }
+      if (digits.length >= 7 && digits.length <= 16) {
+        results.push({ name: name || undefined, phone: digits });
+      }
+    }
+  }
+  return results;
 }
 
 function parsePersonalizedText(text: string, pushName: string, jid: string, sessionName: string): string {
@@ -4067,6 +5297,7 @@ async function sendAutomationResponse(sock: any, targetJid: string, rule: Workfl
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
 const connectingLocks = new Map<string, number>();
 const sessionReconnectFailures = new Map<string, number>();
+const sessionConflictFailures = new Map<string, number>();
 
 let cachedWaVersion: [number, number, number] | null = null;
 let lastVersionFetchTime = 0;
@@ -4194,8 +5425,47 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
     sockInstance.ev.on('creds.update', async () => {
       try {
         await saveCreds();
+        scheduleAuthBundleSync(username, id, 2500);
       } catch (err: any) {
         console.error(`[SESSION: ${id}] Failed saving Baileys credentials:`, err?.message || err);
+      }
+    });
+
+    sockInstance.ev.on('contacts.upsert', (contacts: any[]) => {
+      upsertUserPhoneContacts(username, id, contacts, sockInstance, { source: 'phonebook' }).catch(() => {});
+    });
+
+    sockInstance.ev.on('contacts.update', (updates: any[]) => {
+      upsertUserPhoneContacts(username, id, updates, sockInstance).catch(() => {});
+    });
+
+    sockInstance.ev.on('messaging-history.set', (history: any) => {
+      try {
+        const batch: any[] = [];
+        if (Array.isArray(history?.contacts)) {
+          batch.push(...history.contacts);
+        }
+        if (Array.isArray(history?.chats)) {
+          for (const chat of history.chats) {
+            if (chat?.id && !chat.id.endsWith('@g.us') && !chat.id.endsWith('@newsletter') && chat.id !== 'status@broadcast') {
+              batch.push({
+                id: chat.id,
+                name: chat.displayName || chat.name || undefined,
+                lid: chat.lidJid || chat.accountLid || undefined,
+                phoneNumber: chat.pnJid || undefined
+              });
+            }
+          }
+        }
+        if (batch.length > 0) {
+          upsertUserPhoneContacts(username, id, batch, sockInstance).catch(() => {});
+        }
+      } catch (err) {}
+    });
+
+    sockInstance.ev.on('lid-mapping.update', (mapping: any) => {
+      if (mapping?.lid && mapping?.pn) {
+        applyLidPnMappingToContacts(username, mapping.lid, mapping.pn).catch(() => {});
       }
     });
 
@@ -4225,66 +5495,67 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           cachedWaVersion = null;
         }
 
-        // Determine if credentials were permanently invalidated or revoked by WhatsApp:
-        // - DisconnectReason.loggedOut (401)
-        // - HTTP 401 Unauthorized / 403 Forbidden / Bad session
-        // - "Logged out", "Unauthorized", "Stream Errored", or device unlinked
-        const isExplicitLogout = 
-          statusCode === DisconnectReason.loggedOut || 
+        // Only purge saved WhatsApp credentials when WhatsApp explicitly unlinks/revokes the device
+        // (401 loggedOut / 403 forbidden / 411 multideviceMismatch). Never purge on transient 500/408/428/503/515 errors!
+        const lowerErr = errMessage.toLowerCase();
+        const isExplicitLogout =
+          statusCode === DisconnectReason.loggedOut ||
           statusCode === 401 ||
           statusCode === 403 ||
-          statusCode === DisconnectReason.badSession ||
-          errMessage.toLowerCase().includes('logged out') ||
-          errMessage.toLowerCase().includes('bad session') ||
-          errMessage.toLowerCase().includes('unauthorized');
+          statusCode === DisconnectReason.multideviceMismatch ||
+          lowerErr.includes('logged out') ||
+          lowerErr.includes('device_removed');
 
         if (isExplicitLogout) {
           session.status = 'disconnected';
           session.user = null;
           sessionReconnectFailures.delete(userSessKey);
-          addLog(username, `[SESSION: ${id}] WhatsApp credentials expired or unlinked (Status: ${statusCode || 'Logged Out'}). Purging stale credentials so a fresh QR code can be generated...`, 'info');
+          sessionConflictFailures.delete(userSessKey);
+          addLog(username, `[SESSION: ${id}] WhatsApp device was unlinked or logged out (Status: ${statusCode || 'Logged Out'}). Clearing credentials for fresh QR pairing...`, 'info');
           try {
             if (fs.existsSync(authFolder)) {
               fs.rmSync(authFolder, { recursive: true, force: true });
             }
           } catch (e: any) {}
-          // Immediately schedule clean fresh reconnect which will enter pairing mode and generate a fresh QR!
           scheduleSessionReconnect(username, id, name, 1500);
         } else {
-          const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || errMessage.toLowerCase().includes('conflict');
+          const isConflict = statusCode === 440 || statusCode === DisconnectReason.connectionReplaced || lowerErr.includes('conflict');
+          const hasSavedCreds = fs.existsSync(credsFile);
+
           if (isConflict) {
-            session.status = 'disconnected';
-            sessionReconnectFailures.delete(userSessKey);
-            addLog(username, `[SESSION: ${id}] Connection replaced by another session/device (Reason code: 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" or "Generate Fresh QR" in UI when ready.`, 'info');
-            session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect or Generate Fresh QR to resume.';
+            const conflictCount = (sessionConflictFailures.get(userSessKey) || 0) + 1;
+            sessionConflictFailures.set(userSessKey, conflictCount);
+
+            // During container/server restarts, the previous process's socket can linger briefly on WA servers causing a single 440.
+            // Retry up to 2 times with a 6s cooldown before pausing to avoid breaking auto-resume.
+            if (hasSavedCreds && conflictCount <= 2) {
+              session.status = 'connecting';
+              addLog(username, `[SESSION: ${id}] Temporary stream conflict (440) after restart. Waiting 6s for previous socket to close before resuming (attempt ${conflictCount}/2)...`, 'info');
+              scheduleSessionReconnect(username, id, name, 6000);
+            } else {
+              session.status = 'disconnected';
+              sessionReconnectFailures.delete(userSessKey);
+              addLog(username, `[SESSION: ${id}] Connection replaced by another active session (Code 440 Conflict). Auto-reconnect paused to prevent loop. Click "Reconnect" when ready.`, 'info');
+              session.lastError = 'Session connection replaced / Stream conflict (code 440). Click Reconnect or Generate Fresh QR to resume.';
+            }
           } else {
-            const hasSavedCreds = fs.existsSync(credsFile);
+            sessionConflictFailures.delete(userSessKey);
             const failCount = (sessionReconnectFailures.get(userSessKey) || 0) + 1;
             sessionReconnectFailures.set(userSessKey, failCount);
 
-            if (hasSavedCreds && failCount >= 3) {
-              // Stored credentials have failed multiple consecutive restore attempts!
-              // This is why WhatsApp sessions get stuck without producing new QR codes.
-              session.status = 'disconnected';
-              session.user = null;
-              sessionReconnectFailures.delete(userSessKey);
-              addLog(username, `[SESSION: ${id}] Saved credentials failed to restore after ${failCount} attempts (Code ${statusCode || 'Stream'}). Purging stale credentials to generate a brand new QR code...`, 'info');
-              try {
-                if (fs.existsSync(authFolder)) {
-                  fs.rmSync(authFolder, { recursive: true, force: true });
-                }
-              } catch (e: any) {}
-              scheduleSessionReconnect(username, id, name, 1000);
-            } else if (hasSavedCreds || session.user) {
-              // Smooth stream restart (e.g. Code 515 / 503 / 428 after QR scan or network reset)
+            if (hasSavedCreds || session.user) {
+              // Preserve saved credentials across transient network/stream/container resets and retry with exponential backoff
               session.status = 'connecting';
-              addLog(username, `[SESSION: ${id}] Connection stream reset (Code ${statusCode || 'Stream'}). Reconnecting automatically using saved credentials (attempt ${failCount}/3)...`, 'info');
-              scheduleSessionReconnect(username, id, name, 600);
+              const backoffMs = statusCode === DisconnectReason.restartRequired || statusCode === 515
+                ? 800
+                : Math.min(60000, 1500 * Math.pow(2, Math.min(failCount - 1, 5)));
+              addLog(username, `[SESSION: ${id}] Connection stream reset (Code ${statusCode || 'Stream'}). Reconnecting with saved credentials in ${Math.round(backoffMs / 1000)}s (attempt ${failCount})...`, 'info');
+              scheduleSessionReconnect(username, id, name, backoffMs);
             } else {
               session.status = 'disconnected';
               session.user = null;
               sessionReconnectFailures.delete(userSessKey);
-              const isQrTimeout = errMessage.toLowerCase().includes('qr refs') || statusCode === 408;
+              const isQrTimeout = lowerErr.includes('qr refs') || statusCode === 408;
               if (isQrTimeout) {
                 addLog(username, `[SESSION: ${id}] QR scan timed out. Refreshing dynamic QR code...`, 'info');
               } else {
@@ -4297,6 +5568,7 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         }
       } else if (connection === 'open') {
         sessionReconnectFailures.delete(userSessKey);
+        sessionConflictFailures.delete(userSessKey);
         session.status = 'connected';
         session.qrBase64 = null;
         session.activePairingCode = null;
@@ -4307,6 +5579,16 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
         };
 
         addLog(username, `[SESSION: ${id}] WhatsApp connected! JID: ${session.user.id} (${session.user.name})`, 'success');
+
+        // Persist complete creds + Signal/AppState bundle immediately to Firestore so closing browser/container preserves link
+        syncAuthBundleToFirestore(username, id).catch(() => {});
+
+        // Automatically sync saved phone contacts if local cache is currently empty
+        setTimeout(() => {
+          if (loadUserPhoneContacts(username).length === 0 && session.status === 'connected') {
+            syncPhoneContactsForSession(username, id, sockInstance, true).catch(() => {});
+          }
+        }, 5000);
 
         // Send automatic startup "Bot is Live" notification to own WhatsApp number
         const rawSelfJid = sockInstance.user?.id;
@@ -4353,53 +5635,82 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                 : (msg.pushName || (isGroup ? `Member (${participantJid.split('@')[0]})` : `Contact (${from.split('@')[0]})`));
 
               const { scanText, nativeInvites } = extractComprehensiveMessageContent(msg);
+              const groupCodes = scanText ? extractGroupInviteCodes(scanText) : [];
 
-              // Process native WhatsApp Group Invite Cards
-              for (const nativeInv of nativeInvites) {
-                const fullUrl = `https://chat.whatsapp.com/${nativeInv.code}`;
-                addLog(username, `🔍 Captured native WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
-                handleGroupInviteUrl(
-                  username,
-                  fullUrl,
-                  nativeInv.code,
-                  senderJidFormatted,
-                  senderDisplayName,
-                  nativeInv.caption || nativeInv.groupName || fullUrl,
-                  id,
-                  sockInstance,
-                  {
-                    chatJid: from,
-                    chatName: isGroup ? 'WhatsApp Group' : 'Direct Message',
-                    isOutgoing: isMe,
-                    nativeName: nativeInv.groupName,
-                    nativeDesc: nativeInv.caption,
-                    nativeGroupJid: nativeInv.groupJid
-                  }
-                ).catch(e => console.error('Error handling native group invite:', e));
-              }
-
-              // Process text and media caption links
-              if (scanText) {
-                const groupCodes = extractGroupInviteCodes(scanText);
-                for (const code of groupCodes) {
-                  const fullUrl = `https://chat.whatsapp.com/${code}`;
-                  addLog(username, `🔍 Captured WhatsApp Group link in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
-                  handleGroupInviteUrl(
-                    username,
-                    fullUrl,
-                    code,
-                    senderJidFormatted,
-                    senderDisplayName,
-                    scanText.substring(0, 200),
-                    id,
-                    sockInstance,
-                    {
-                      chatJid: from,
-                      chatName: isGroup ? 'WhatsApp Group' : 'Direct Message',
-                      isOutgoing: isMe
+              if (nativeInvites.length > 0 || groupCodes.length > 0) {
+                // Serialize multi-link extraction per message & share participating cache so messages with many links never hit rate limits or overwrite one another
+                (async () => {
+                  let preloadedParticipating: Record<string, any> | undefined;
+                  try {
+                    if (sockInstance && typeof sockInstance.groupFetchAllParticipating === 'function') {
+                      preloadedParticipating = await sockInstance.groupFetchAllParticipating();
                     }
-                  ).catch(e => console.error('Error handling group link url:', e));
-                }
+                  } catch (e) {}
+
+                  const processedInMsg = new Set<string>();
+
+                  for (const nativeInv of nativeInvites) {
+                    const cleanNativeCode = String(nativeInv.code || '').split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '').trim();
+                    if (!cleanNativeCode || processedInMsg.has(cleanNativeCode)) continue;
+                    processedInMsg.add(cleanNativeCode);
+                    const fullUrl = `https://chat.whatsapp.com/${cleanNativeCode}`;
+                    addLog(username, `🔍 Captured native WhatsApp Group invite card in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
+                    try {
+                      await handleGroupInviteUrl(
+                        username,
+                        fullUrl,
+                        cleanNativeCode,
+                        senderJidFormatted,
+                        senderDisplayName,
+                        nativeInv.caption || nativeInv.groupName || fullUrl,
+                        id,
+                        sockInstance,
+                        {
+                          chatJid: from,
+                          chatName: isGroup ? 'WhatsApp Group' : 'Direct Message',
+                          isOutgoing: isMe,
+                          nativeName: nativeInv.groupName,
+                          nativeDesc: nativeInv.caption,
+                          nativeGroupJid: nativeInv.groupJid,
+                          preloadedParticipating
+                        }
+                      );
+                    } catch (e) {
+                      console.error('Error handling native group invite:', e);
+                    }
+                  }
+
+                  for (let idx = 0; idx < groupCodes.length; idx++) {
+                    const code = groupCodes[idx];
+                    if (processedInMsg.has(code)) continue;
+                    processedInMsg.add(code);
+                    const fullUrl = `https://chat.whatsapp.com/${code}`;
+                    addLog(username, `🔍 Captured WhatsApp Group link (${idx + 1}/${groupCodes.length}) in ${isGroup ? 'Group ' + from : 'DM ' + from} from ${senderDisplayName}: ${fullUrl}`, 'info');
+                    try {
+                      await handleGroupInviteUrl(
+                        username,
+                        fullUrl,
+                        code,
+                        senderJidFormatted,
+                        senderDisplayName,
+                        scanText.substring(0, 300),
+                        id,
+                        sockInstance,
+                        {
+                          chatJid: from,
+                          chatName: isGroup ? 'WhatsApp Group' : 'Direct Message',
+                          isOutgoing: isMe,
+                          preloadedParticipating
+                        }
+                      );
+                    } catch (e) {
+                      console.error('Error handling group link url:', e);
+                    }
+                    if (idx < groupCodes.length - 1) {
+                      await new Promise(r => setTimeout(r, 120));
+                    }
+                  }
+                })().catch(e => console.error('Async group link batch error:', e));
               }
             } catch (scanErr: any) {
               console.error('Group link scanner error:', scanErr);
@@ -4583,10 +5894,19 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
                       `Sending messages with all media, formatting & native View Channel tag now...` 
               }, { quoted: msg });
 
+              const prebuiltSharenowCtx = (resolvedChannel || effectiveChannelLink)
+                ? await resolveChannelContextForDispatch(sockInstance, username, resolvedChannel, {
+                    channelLink: effectiveChannelLink,
+                    showForwardedTag,
+                    quotedMessage
+                  })
+                : buildChannelContextInfo(null, showForwardedTag);
+
               const preparedMsgPayload = prepareForwardedMessage(quotedMessage, resolvedChannel, {
                 channelLink: effectiveChannelLink,
                 appendChannelLink: !!settings.appendChannelLinkToShare,
-                showForwardedTag
+                showForwardedTag,
+                prebuiltContextInfo: prebuiltSharenowCtx
               });
 
               let successCount = 0;
@@ -5320,7 +6640,7 @@ async function getLinkPreviewData(text: string) {
 }
 
 // Delayed & Batched Status Scheduler Workers
-async function publishStatusBatchDirectly(username: string, sched: any, batchMembers: string[]): Promise<boolean> {
+async function publishStatusBatchDirectly(username: string, sched: any, batchMembers: string[], batchGroupIds: string[] = []): Promise<boolean> {
   const {
     sessionIds = ['primary'],
     statusType = 'text',
@@ -5330,7 +6650,10 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
     attachmentType = 'none',
     attachmentUrl,
     attachmentData,
-    attachmentName
+    attachmentName,
+    tagGroups = true,
+    tagGroupMembers = false,
+    mentions = []
   } = sched;
 
   const validSessions = sessionIds.filter((sid: string) => {
@@ -5370,6 +6693,13 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
     }
   }
 
+  const mentionGroupJids = (tagGroups !== false && Array.isArray(batchGroupIds)) ? batchGroupIds : [];
+  const rawMentions = Array.isArray(mentions) ? mentions : [];
+  const mentionUserJids: string[] = [
+    ...rawMentions.filter((m: string) => typeof m === 'string' && !m.endsWith('@g.us')),
+    ...(tagGroupMembers ? batchMembers.filter((m: string) => typeof m === 'string' && !m.endsWith('@g.us')) : [])
+  ];
+
   let successAny = false;
   for (const sid of validSessions) {
     const userSessKey = `${username}:${sid}`;
@@ -5377,66 +6707,42 @@ async function publishStatusBatchDirectly(username: string, sched: any, batchMem
     if (!session || !session.sock) continue;
 
     try {
-      addLog(username, `Sending Status Batch of ${batchMembers.length} members from session "${session.name}"...`, 'info');
+      const cleanJidList = await resolveStatusJidList(
+        session.sock,
+        finalJidList,
+        username,
+        sched.audienceMode,
+        Boolean(sched.includeLeads),
+        batchGroupIds
+      );
 
-      let payload: any = {};
-      const cleanJidList = finalJidList
-        .filter(j => j && j !== 'status@broadcast' && !j.endsWith('@g.us'))
-        .map(j => {
-          const num = j.split('@')[0].split(':')[0].replace(/\D/g, '');
-          return num ? `${num}@s.whatsapp.net` : null;
-        })
-        .filter(Boolean) as string[];
+      addLog(
+        username,
+        `Sending Status Batch (${cleanJidList.length} member viewer(s)${mentionGroupJids.length > 0 ? `, tagging ${mentionGroupJids.length} group(s)` : ''}) from session "${session.name}"...`,
+        'info'
+      );
 
-      const options: any = {};
-      if (cleanJidList.length > 0) {
-        options.statusJidList = cleanJidList;
-      }
-
-      if (statusType === 'text') {
-        payload = { text: text };
-        if (backgroundColor) {
-          const cleanHex = backgroundColor.replace('#', '');
-          const argb = parseInt('FF' + cleanHex, 16);
-          const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
-          payload.backgroundColor = backgroundArgb;
-          payload.backgroundArgb = backgroundArgb;
-          payload.font = font || 1;
+      const pubRes = await publishStatusWithGroupMentions(
+        session.sock,
+        username,
+        session.name || sid,
+        {
+          statusType,
+          text,
+          backgroundColor,
+          font,
+          fileRef,
+          statusJidList: cleanJidList,
+          mentionGroupJids,
+          mentionUserJids
         }
-      } else if (statusType === 'image' && fileRef) {
-        payload = {
-          image: fileRef,
-          caption: text || ''
-        };
-      } else if (statusType === 'video' && fileRef) {
-        payload = {
-          video: fileRef,
-          caption: text || ''
-        };
-      } else {
-        throw new Error('Unsupported status type or missing attachment data');
-      }
+      );
 
-      const cleanedMentions = batchMembers
-        .filter(m => m && !m.endsWith('@g.us'))
-        .map((m: string) => {
-          const num = m.split('@')[0].split(':')[0].replace(/\D/g, '');
-          return num ? `${num}@s.whatsapp.net` : null;
-        })
-        .filter(Boolean) as string[];
-
-      const limitMentions = cleanedMentions.slice(0, 5); // Max 5 silent mentions per WhatsApp status update
-      if (limitMentions.length > 0) {
-        payload.contextInfo = {
-          mentionedJid: limitMentions
-        };
-        if (statusType !== 'text') {
-          payload.mentions = limitMentions;
-        }
-      }
-
-      await session.sock.sendMessage('status@broadcast', payload, options);
-      addLog(username, `✅ Successfully published WhatsApp Status batch (${batchMembers.length} tagged) from "${session.name}".`, 'success');
+      addLog(
+        username,
+        `✅ Successfully published WhatsApp Status batch (${pubRes.recipientCount} viewer(s)${pubRes.notifiedGroups > 0 ? `, ${pubRes.notifiedGroups} group(s) notified` : ''}) from "${session.name}".`,
+        'success'
+      );
       successAny = true;
     } catch (err: any) {
       console.error(`Error sending status batch from session ${sid}:`, err);
@@ -5484,7 +6790,7 @@ async function checkAndProcessStatusSchedules() {
               continue;
             }
             
-            // Compile unique participants of this group batch
+            // Compile cached participants as seed, and pass currentGroups so live groupMetadata resolves any @lid / updated members
             const uniqueParticipants = new Set<string>();
             const savedGroups = loadUserSavedGroups(username);
             for (const gid of currentGroups) {
@@ -5495,25 +6801,7 @@ async function checkAndProcessStatusSchedules() {
             }
             const participantList = Array.from(uniqueParticipants);
             
-            if (participantList.length === 0) {
-              addLog(username, `⚠️ Group batch for schedule "${sched.id}" had 0 combined participants. Skipping to next.`, 'info');
-              sched.completedGroups = sched.completedGroups || [];
-              sched.completedGroups.push(...currentGroups);
-              sched.remainingGroups = (sched.remainingGroups || []).slice(batchSize);
-              sched.lastRunAt = new Date().toISOString();
-              if (sched.remainingGroups.length === 0) {
-                sched.status = 'completed';
-                sched.nextRunAt = null;
-              } else {
-                const completedCount = (sched.completedGroups || []).length;
-                const nextDelay = (completedCount >= 1 && sched.secondDelayMinutes) ? sched.secondDelayMinutes : sched.delayMinutes;
-                sched.nextRunAt = new Date(Date.now() + nextDelay * 60 * 1000).toISOString();
-              }
-              hasChanges = true;
-              continue;
-            }
-            
-            const success = await publishStatusBatchDirectly(username, sched, participantList);
+            const success = await publishStatusBatchDirectly(username, sched, participantList, currentGroups);
             
             if (success) {
               sched.completedGroups = sched.completedGroups || [];
@@ -5550,7 +6838,7 @@ async function checkAndProcessStatusSchedules() {
               continue;
             }
             
-            const success = await publishStatusBatchDirectly(username, sched, currentBatch);
+            const success = await publishStatusBatchDirectly(username, sched, currentBatch, []);
             
             if (success) {
               sched.completedMembers = sched.completedMembers || [];
@@ -6020,6 +7308,10 @@ function getFirestoreStatusPayload() {
       backgroundColor,
       font,
       statusJidList,
+      groupIds,
+      tagGroups,
+      audienceMode,
+      includeLeads,
       mentions,
       messagesSequence,
       interMessageDelaySeconds
@@ -6072,6 +7364,10 @@ function getFirestoreStatusPayload() {
       backgroundColor: isStatusMode ? backgroundColor : undefined,
       font: isStatusMode ? font : undefined,
       statusJidList: Array.isArray(statusJidList) ? statusJidList : undefined,
+      groupIds: isStatusMode && Array.isArray(groupIds) ? groupIds : undefined,
+      tagGroups: isStatusMode ? (tagGroups !== false) : undefined,
+      audienceMode: isStatusMode ? audienceMode : undefined,
+      includeLeads: isStatusMode ? Boolean(includeLeads) : undefined,
       mentions: Array.isArray(mentions) ? mentions : undefined,
       messagesSequence: Array.isArray(messagesSequence) ? messagesSequence : undefined,
       interMessageDelaySeconds: typeof interMessageDelaySeconds === 'number' ? interMessageDelaySeconds : undefined,
@@ -6227,10 +7523,17 @@ function getFirestoreStatusPayload() {
       return res.status(400).json({ success: false, error: 'WhatsApp Group Invite link or code is required.' });
     }
 
-    const codes = extractGroupInviteCodes(urlOrCode);
-    const code = codes.length > 0 ? codes[0] : urlOrCode.trim().split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '');
-    if (!code || code.length < 15) {
-      return res.status(400).json({ success: false, error: 'Invalid WhatsApp Group invite link or code.' });
+    const extractedCodes = extractGroupInviteCodes(urlOrCode);
+    let targetCodes: string[] = extractedCodes;
+    if (targetCodes.length === 0) {
+      const singleFallback = urlOrCode.trim().split('?')[0].split('#')[0].replace(/[\.,!?:;]+$/, '');
+      if (/^[A-Za-z0-9_-]{15,40}$/.test(singleFallback)) {
+        targetCodes = [singleFallback];
+      }
+    }
+
+    if (targetCodes.length === 0) {
+      return res.status(400).json({ success: false, error: 'No valid WhatsApp Group invite link or code found.' });
     }
 
     const userSessKey = `${req.username}:${sessionId}`;
@@ -6245,22 +7548,49 @@ function getFirestoreStatusPayload() {
     }
 
     try {
-      const fullUrl = `https://chat.whatsapp.com/${code}`;
-      const result = await handleGroupInviteUrl(
-        req.username,
-        fullUrl,
-        code,
-        sockInstance?.user?.id || 'manual',
-        'User (Manual Add)',
-        'Manually added via Dashboard',
-        sessionId,
-        sockInstance,
-        {
-          chatName: 'Manual Entry',
-          isOutgoing: true
+      let preloadedParticipating: Record<string, any> | undefined;
+      try {
+        if (sockInstance && typeof sockInstance.groupFetchAllParticipating === 'function') {
+          preloadedParticipating = await sockInstance.groupFetchAllParticipating();
         }
-      );
-      res.json({ success: true, invite: result, message: `Group link "${result?.groupName || code}" saved successfully!` });
+      } catch (e) {}
+
+      const results: CapturedGroupInvite[] = [];
+      for (let idx = 0; idx < targetCodes.length; idx++) {
+        const code = targetCodes[idx];
+        const fullUrl = `https://chat.whatsapp.com/${code}`;
+        const result = await handleGroupInviteUrl(
+          req.username,
+          fullUrl,
+          code,
+          sockInstance?.user?.id || 'manual',
+          'User (Manual Add)',
+          targetCodes.length > 1 ? urlOrCode.trim().substring(0, 300) : 'Manually added via Dashboard',
+          sessionId,
+          sockInstance,
+          {
+            chatName: 'Manual Entry',
+            isOutgoing: true,
+            preloadedParticipating
+          }
+        );
+        if (result) results.push(result);
+        if (idx < targetCodes.length - 1) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+
+      const summaryMsg = results.length === 1
+        ? `Group link "${results[0]?.groupName || targetCodes[0]}" saved successfully!`
+        : `Extracted and saved ${results.length} WhatsApp group links!`;
+
+      res.json({
+        success: true,
+        invite: results[0],
+        invites: results,
+        count: results.length,
+        message: summaryMsg
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -6877,13 +8207,27 @@ function getFirestoreStatusPayload() {
     let preparedMediaBundle: { items: PreparedMediaEntry[]; mainCaption: string } | null = null;
     let preparedMsgPayload: any = null;
 
+    const prebuiltChannelCtx = useChannelTag === false
+      ? { isForwarded: effectiveShowForwarded, ...(effectiveShowForwarded ? { forwardingScore: 1 } : {}) }
+      : await resolveChannelContextForDispatch(
+          sess.sock,
+          req.username,
+          effectiveChannelInfo || (effectiveChannelLink ? { newsletterName: userSettings.defaultChannelName || 'WhatsApp Channel', channelLink: effectiveChannelLink } : null),
+          {
+            channelLink: effectiveChannelLink,
+            showForwardedTag: effectiveShowForwarded,
+            quotedMessage: share.quotedMessage
+          }
+        );
+
     if (hasExtraMedia) {
       preparedMediaBundle = await prepareShareMediaBundle(sess.sock, req.username, share);
       if (preparedMediaBundle.items.length === 0) {
         preparedMsgPayload = prepareForwardedMessage(share.quotedMessage, effectiveChannelInfo, {
           channelLink: effectiveChannelLink,
           appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
-          showForwardedTag: effectiveShowForwarded
+          showForwardedTag: effectiveShowForwarded,
+          prebuiltContextInfo: prebuiltChannelCtx
         });
       }
     } else {
@@ -6891,7 +8235,8 @@ function getFirestoreStatusPayload() {
       preparedMsgPayload = prepareForwardedMessage(share.quotedMessage, effectiveChannelInfo, {
         channelLink: effectiveChannelLink,
         appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
-        showForwardedTag: effectiveShowForwarded
+        showForwardedTag: effectiveShowForwarded,
+        prebuiltContextInfo: prebuiltChannelCtx
       });
     }
 
@@ -6910,7 +8255,9 @@ function getFirestoreStatusPayload() {
               channelLink: effectiveChannelLink,
               appendChannelLink: appendChannelLink === true && !!effectiveChannelLink,
               showForwardedTag: effectiveShowForwarded,
-              cardLayout: effectiveCardLayout
+              cardLayout: effectiveCardLayout,
+              prebuiltContextInfo: prebuiltChannelCtx,
+              username: req.username
             });
           } else {
             await forwardMessagePayloadWithChannel(sess.sock, formattedJid, preparedMsgPayload);
@@ -7225,6 +8572,140 @@ function getFirestoreStatusPayload() {
       success: true, 
       message: `Successfully saved ${addedCount} new contact(s) to Leads Hub!`, 
       addedCount 
+    });
+  });
+
+  // Phone Contacts APIs (Synced from WhatsApp Phonebook & VCF Imports)
+  app.get('/api/contacts', requireAuth, (req: any, res) => {
+    const contacts = loadUserPhoneContacts(req.username);
+    const savedCount = contacts.filter(c => c.isSavedContact).length;
+    res.json({
+      success: true,
+      contacts,
+      savedCount,
+      totalCount: contacts.length
+    });
+  });
+
+  app.post('/api/contacts/sync', requireAuth, async (req: any, res) => {
+    const force = req.body?.force !== false;
+    const beforeCount = loadUserPhoneContacts(req.username).length;
+
+    const connectedSessions: Array<{ id: string; sock: any }> = [];
+    for (const [key, sess] of sessions.entries()) {
+      if (key.startsWith(`${req.username}:`) && sess.status === 'connected' && sess.sock) {
+        connectedSessions.push({ id: sess.id, sock: sess.sock });
+      }
+    }
+
+    if (connectedSessions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No connected WhatsApp session found. Please link/connect a session first to sync your phone contacts.'
+      });
+    }
+
+    let syncedSessionCount = 0;
+    let lastError: string | undefined;
+
+    for (const s of connectedSessions) {
+      const result = await syncPhoneContactsForSession(req.username, s.id, s.sock, force);
+      if (result.ok) {
+        syncedSessionCount++;
+      } else {
+        lastError = result.error;
+      }
+    }
+
+    // Give Baileys event buffer a short window to finish emitting contacts.upsert
+    await new Promise(resolve => setTimeout(resolve, 600));
+    flushUserPhoneContacts(req.username);
+
+    const contacts = loadUserPhoneContacts(req.username);
+    const savedCount = contacts.filter(c => c.isSavedContact).length;
+    const newlySyncedCount = Math.max(0, contacts.length - beforeCount);
+
+    addLog(req.username, `📇 Synced WhatsApp phone contacts: ${contacts.length} total (${savedCount} saved in phonebook).`, 'success');
+
+    res.json({
+      success: true,
+      contacts,
+      savedCount,
+      totalCount: contacts.length,
+      newlySyncedCount,
+      message: contacts.length > 0
+        ? `Synced ${contacts.length} WhatsApp phone contact(s) (${savedCount} saved in phonebook).`
+        : (lastError ? `Sync completed with note: ${lastError}` : 'Sync completed. If your phone has not pushed address book entries to WhatsApp Web yet, you can also import a .VCF contacts file exported from your phone.')
+    });
+  });
+
+  app.post('/api/contacts/import', requireAuth, async (req: any, res) => {
+    const { vcfContent, contacts: rawList, defaultCountryCode = '' } = req.body || {};
+    const parsedItems: Array<{ id: string; name?: string; phoneNumber: string }> = [];
+
+    if (typeof vcfContent === 'string' && vcfContent.trim()) {
+      const vcfContacts = parseVcfContacts(vcfContent, String(defaultCountryCode || ''));
+      for (const item of vcfContacts) {
+        parsedItems.push({
+          id: `${item.phone}@s.whatsapp.net`,
+          name: item.name,
+          phoneNumber: `${item.phone}@s.whatsapp.net`
+        });
+      }
+    }
+
+    if (Array.isArray(rawList)) {
+      for (const item of rawList) {
+        const digits = String(item?.phone || item?.jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+        if (digits.length >= 7 && digits.length <= 16) {
+          parsedItems.push({
+            id: `${digits}@s.whatsapp.net`,
+            name: item?.name ? String(item.name).trim() : undefined,
+            phoneNumber: `${digits}@s.whatsapp.net`
+          });
+        }
+      }
+    }
+
+    if (parsedItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No valid phone numbers found. Upload a valid .vcf vCard file or provide phone numbers with country codes.'
+      });
+    }
+
+    const beforeCount = loadUserPhoneContacts(req.username).length;
+    await upsertUserPhoneContacts(req.username, 'vcf_import', parsedItems, undefined, {
+      source: 'vcf_import',
+      immediate: true
+    });
+
+    const contacts = loadUserPhoneContacts(req.username);
+    const savedCount = contacts.filter(c => c.isSavedContact).length;
+    const addedCount = Math.max(0, contacts.length - beforeCount);
+
+    addLog(req.username, `📇 Imported ${parsedItems.length} phone contact(s) (${addedCount} new, ${contacts.length} total).`, 'success');
+
+    res.json({
+      success: true,
+      contacts,
+      savedCount,
+      totalCount: contacts.length,
+      addedCount,
+      message: `Imported ${parsedItems.length} phone contact(s) (${contacts.length} total saved contacts ready for Status updates).`
+    });
+  });
+
+  app.delete('/api/contacts/:jid', requireAuth, (req: any, res) => {
+    const targetJid = decodeURIComponent(req.params.jid || '');
+    const contacts = loadUserPhoneContacts(req.username);
+    const filtered = contacts.filter(c => c.jid !== targetJid && c.phone !== targetJid);
+    saveUserPhoneContactsImmediate(req.username, filtered);
+    res.json({
+      success: true,
+      contacts: filtered,
+      savedCount: filtered.filter(c => c.isSavedContact).length,
+      totalCount: filtered.length
     });
   });
 
@@ -7593,7 +9074,7 @@ function getFirestoreStatusPayload() {
   });
 
   app.post('/api/sessions/reconnect', requireAuth, async (req: any, res) => {
-    const { id, sessionId } = req.body;
+    const { id, sessionId, force } = req.body;
     const targetId = id || sessionId;
 
     if (!targetId) {
@@ -7606,6 +9087,19 @@ function getFirestoreStatusPayload() {
 
     const userSessKey = `${req.username}:${targetId}`;
     const existingSess = sessions.get(userSessKey);
+    const lastConnecting = connectingLocks.get(userSessKey) || 0;
+
+    // Never tear down an already connected session, an active QR/pairing prompt, or a handshake in progress unless user explicitly clicked Reconnect (force: true)
+    if (!force && existingSess) {
+      if (existingSess.status === 'connected') {
+        return res.json({ success: true, skipped: true, message: `Session "${targetId}" is already connected.` });
+      }
+      if (existingSess.qrBase64 || existingSess.activePairingCode || (existingSess.status === 'connecting' && Date.now() - lastConnecting < 30000)) {
+        return res.json({ success: true, skipped: true, message: `Session "${targetId}" handshake / QR is already active.` });
+      }
+    }
+
+    sessionConflictFailures.delete(userSessKey);
 
     if (existingSess && existingSess.sock) {
       try {
@@ -8165,6 +9659,31 @@ function getFirestoreStatusPayload() {
     });
   });
 
+  app.post('/api/status/fetch-bg-image', requireAuth, async (req: any, res) => {
+    const { url } = req.body || {};
+    if (!url || typeof url !== 'string' || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+      return res.status(400).json({ success: false, error: 'Please provide a valid HTTP or HTTPS image URL.' });
+    }
+    try {
+      const localPath = await getCachedMediaUrl(url.trim(), req.username);
+      if (!fs.existsSync(localPath)) {
+        return res.status(404).json({ success: false, error: 'Failed to download background image.' });
+      }
+      const buf = fs.readFileSync(localPath);
+      const ext = path.extname(localPath).toLowerCase();
+      let mime = 'image/jpeg';
+      if (ext === '.png') mime = 'image/png';
+      else if (ext === '.webp') mime = 'image/webp';
+      else if (ext === '.gif') mime = 'image/gif';
+      res.json({
+        success: true,
+        dataUrl: `data:${mime};base64,${buf.toString('base64')}`
+      });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err?.message || 'Unable to load background image URL.' });
+    }
+  });
+
   app.post('/api/status/send', requireAuth, async (req: any, res) => {
     const {
       sessionIds = ['primary'],
@@ -8177,6 +9696,10 @@ function getFirestoreStatusPayload() {
       attachmentData,
       attachmentName,
       statusJidList = [],
+      groupIds = [],
+      tagGroups = true,
+      audienceMode,
+      includeLeads = false,
       mentions = []
     } = req.body;
 
@@ -8188,15 +9711,6 @@ function getFirestoreStatusPayload() {
 
     if (validSessions.length === 0) {
       return res.status(400).json({ success: false, error: 'No connected sessions selected. Please connect at least one session.' });
-    }
-
-    // Resolve final JID target list
-    let finalJidList = [...statusJidList];
-    if (finalJidList.length === 0) {
-      // Auto-load all leads & group members as a fallback to make sure status is visible
-      const leads = loadUserLeads(req.username) || [];
-      const leadJids = leads.map((l: any) => l.jid).filter(Boolean);
-      finalJidList = Array.from(new Set([...leadJids]));
     }
 
     // Prepare media file reference if there is any
@@ -8224,78 +9738,73 @@ function getFirestoreStatusPayload() {
       }
     }
 
-    const cleanJidList = finalJidList
-      .filter(j => j && j !== 'status@broadcast' && !j.endsWith('@g.us'))
-      .map((j: string) => {
-        const cleanNum = j.split('@')[0].split(':')[0].replace(/\D/g, '');
-        return cleanNum ? `${cleanNum}@s.whatsapp.net` : null;
-      })
-      .filter(Boolean) as string[];
+    const rawMentions = Array.isArray(mentions) ? mentions : [];
+    const explicitGroupMentions = rawMentions
+      .filter((m: any) => typeof m === 'string' && m.trim().endsWith('@g.us'))
+      .map((m: string) => m.trim());
+    const cleanGroupIds = Array.from(
+      new Set([
+        ...(Array.isArray(groupIds) ? groupIds.filter((g: any) => typeof g === 'string' && g.trim().endsWith('@g.us')).map((g: string) => g.trim()) : []),
+        ...explicitGroupMentions
+      ])
+    );
+    const mentionGroupJids = (tagGroups !== false) ? cleanGroupIds : explicitGroupMentions;
+    const mentionUserJids = rawMentions.filter((m: any) => typeof m === 'string' && !m.trim().endsWith('@g.us'));
 
-    const options: any = {};
-    if (cleanJidList.length > 0) {
-      options.statusJidList = cleanJidList;
-    }
+    const results: any[] = [];
+    let maxRecipients = 0;
+    let totalNotifiedGroups = 0;
 
-    const results = [];
     for (const sid of validSessions) {
       const userSessKey = `${req.username}:${sid}`;
       const session = sessions.get(userSessKey);
       if (!session || !session.sock) continue;
 
       try {
-        addLog(req.username, `Sending WhatsApp Status (${statusType}) from session "${session.name}"...`, 'info');
+        const cleanJidList = await resolveStatusJidList(
+          session.sock,
+          Array.isArray(statusJidList) ? statusJidList : [],
+          req.username,
+          audienceMode,
+          Boolean(includeLeads),
+          cleanGroupIds
+        );
 
-        let payload: any = {};
+        addLog(
+          req.username,
+          `Sending WhatsApp Status (${statusType}) to ${cleanJidList.length} member/contact(s)${mentionGroupJids.length > 0 ? ` & tagging ${mentionGroupJids.length} group(s)` : ''} from session "${session.name}"...`,
+          'info'
+        );
 
-        if (statusType === 'text') {
-          payload = { text: text };
-          if (backgroundColor) {
-            const cleanHex = backgroundColor.replace('#', '');
-            const argb = parseInt('FF' + cleanHex, 16);
-            const backgroundArgb = argb > 2147483647 ? argb - 4294967296 : argb;
-            payload.backgroundColor = backgroundArgb;
-            payload.backgroundArgb = backgroundArgb;
-            payload.font = font || 1;
+        const pubRes = await publishStatusWithGroupMentions(
+          session.sock,
+          req.username,
+          session.name || sid,
+          {
+            statusType,
+            text,
+            backgroundColor,
+            font,
+            fileRef,
+            statusJidList: cleanJidList,
+            mentionGroupJids,
+            mentionUserJids
           }
-        } else if (statusType === 'image' && fileRef) {
-          payload = {
-            image: fileRef,
-            caption: text || ''
-          };
-        } else if (statusType === 'video' && fileRef) {
-          payload = {
-            video: fileRef,
-            caption: text || ''
-          };
-        } else {
-          throw new Error('Unsupported status type or missing attachment data');
-        }
+        );
 
-        // Add silent mentions/tags (Max 5 for safety)
-        if (mentions && mentions.length > 0) {
-          const cleanedMentions = mentions
-            .filter((m: string) => m && !m.endsWith('@g.us'))
-            .map((m: string) => {
-              const cleanNum = m.split('@')[0].split(':')[0].replace(/\D/g, '');
-              return cleanNum ? `${cleanNum}@s.whatsapp.net` : null;
-            })
-            .filter(Boolean) as string[];
-
-          const limitMentions = cleanedMentions.slice(0, 5); // Max 5 silent mentions per status update
-          if (limitMentions.length > 0) {
-            payload.contextInfo = {
-              mentionedJid: limitMentions
-            };
-            if (statusType !== 'text') {
-              payload.mentions = limitMentions;
-            }
-          }
-        }
-
-        await session.sock.sendMessage('status@broadcast', payload, options);
-        results.push({ sessionId: sid, success: true });
-        addLog(req.username, `✅ Successfully published WhatsApp status from session "${session.name}".`, 'success');
+        maxRecipients = Math.max(maxRecipients, pubRes.recipientCount);
+        totalNotifiedGroups = Math.max(totalNotifiedGroups, pubRes.notifiedGroups);
+        results.push({
+          sessionId: sid,
+          success: true,
+          recipientCount: pubRes.recipientCount,
+          notifiedGroups: pubRes.notifiedGroups
+        });
+        addLog(
+          req.username,
+          `✅ Successfully published WhatsApp status (${pubRes.recipientCount} contact(s) in visibility list${pubRes.notifiedGroups > 0 ? `, ${pubRes.notifiedGroups} group(s) notified` : ''}) from session "${session.name}".`,
+          'success'
+        );
       } catch (err: any) {
         console.error(`Error sending status from session ${sid}:`, err);
         results.push({ sessionId: sid, success: false, error: err.message });
@@ -8303,11 +9812,24 @@ function getFirestoreStatusPayload() {
       }
     }
 
+    const groupSummary = totalNotifiedGroups > 0 ? ` Notified ${totalNotifiedGroups} tagged group(s) in chat.` : '';
     const allSuccessful = results.every(r => r.success);
     if (allSuccessful) {
-      res.json({ success: true, message: 'Status successfully published to WhatsApp!', results });
+      res.json({
+        success: true,
+        recipientCount: maxRecipients,
+        notifiedGroups: totalNotifiedGroups,
+        message: `Status published to WhatsApp! Visible to ${maxRecipients} contact(s) (including your own WhatsApp status view).${groupSummary}`,
+        results
+      });
     } else if (results.some(r => r.success)) {
-      res.json({ success: true, message: 'Status published from some connected sessions.', results });
+      res.json({
+        success: true,
+        recipientCount: maxRecipients,
+        notifiedGroups: totalNotifiedGroups,
+        message: `Status published from some connected sessions (${maxRecipients} contact(s) targeted).${groupSummary}`,
+        results
+      });
     } else {
       res.status(500).json({ success: false, error: 'Failed to publish status from any selected sessions.', results });
     }
@@ -8338,11 +9860,16 @@ function getFirestoreStatusPayload() {
       attachmentName,
       groupMembers = [],
       groupIds = [],
+      tagGroups = true,
+      tagGroupMembers = false,
+      mentions = [],
       batchMode = 'members', // 'members' or 'groups'
       delayMinutes = 5,
       secondDelayMinutes,
       batchSize = 5,
-      startTime
+      startTime,
+      audienceMode,
+      includeLeads = false
     } = req.body;
 
     const isGroupMode = batchMode === 'groups';
@@ -8352,6 +9879,9 @@ function getFirestoreStatusPayload() {
     if (!isGroupMode) {
       if (activeMembers.length === 0 && statusJidList.length > 0) {
         activeMembers = [...statusJidList];
+      }
+      if (activeMembers.length === 0 && audienceMode === 'phone_contacts') {
+        activeMembers = loadUserPhoneContacts(req.username).map(c => c.jid).filter(Boolean);
       }
       if (activeMembers.length === 0) {
         // Fallback for general status broadcast without specific recipient filter
@@ -8380,6 +9910,11 @@ function getFirestoreStatusPayload() {
       attachmentName,
       sessionIds,
       batchMode,
+      audienceMode,
+      includeLeads: Boolean(includeLeads),
+      tagGroups: tagGroups !== false,
+      tagGroupMembers: Boolean(tagGroupMembers),
+      mentions: Array.isArray(mentions) ? mentions : [],
       totalMembersCount: activeMembers.length,
       remainingMembers: activeMembers,
       completedMembers: [],
@@ -8793,3 +10328,17 @@ process.on('uncaughtException', (err: any) => {
 process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
   console.error('[PROCESS WARNING] Unhandled Rejection at:', promise, 'reason:', reason);
 });
+
+const handleGracefulShutdown = async (signal: string) => {
+  console.log(`[WA-BRIDGE] Received ${signal}. Flushing WhatsApp session auth bundles to Firestore before exit...`);
+  try {
+    await Promise.race([
+      flushAllPendingAuthBundles(),
+      new Promise(resolve => setTimeout(resolve, 4000))
+    ]);
+  } catch {}
+  process.exit(0);
+};
+
+process.on('SIGTERM', () => { handleGracefulShutdown('SIGTERM'); });
+process.on('SIGINT', () => { handleGracefulShutdown('SIGINT'); });

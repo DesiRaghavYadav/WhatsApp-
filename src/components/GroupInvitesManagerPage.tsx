@@ -20,7 +20,9 @@ import {
   HelpCircle,
   MessageSquare,
   ArrowRight,
-  Info
+  Info,
+  CheckSquare,
+  Square
 } from 'lucide-react';
 
 export type GroupJoinStatus = 
@@ -109,10 +111,69 @@ export default function GroupInvitesManagerPage({
   // Single Join Loading State
   const [joiningCode, setJoiningCode] = useState<string | null>(null);
 
+  // Multi-select & Bulk Copy State
+  const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
   const notify = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
     if (addToast) {
       addToast(msg, type);
     }
+  };
+
+  // Keep selectedCodes clean if invites are deleted/reloaded
+  useEffect(() => {
+    const validCodes = new Set(invites.map(i => i.code));
+    setSelectedCodes(prev => {
+      const next = prev.filter(c => validCodes.has(c));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [invites]);
+
+  const copyTextSafely = async (text: string): Promise<boolean> => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {}
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleBulkCopyUrls = async (urls: string[], key: string, label: string) => {
+    const cleanUrls = Array.from(new Set(urls.map(u => (u || '').trim()).filter(Boolean)));
+    if (cleanUrls.length === 0) {
+      notify('No group links available to copy.', 'info');
+      return;
+    }
+    const ok = await copyTextSafely(cleanUrls.join('\n'));
+    if (ok) {
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(prev => (prev === key ? null : prev)), 2000);
+      notify(`Copied ${cleanUrls.length} ${cleanUrls.length === 1 ? 'group link' : 'group links'} (${label}) to clipboard!`, 'success');
+    } else {
+      notify('Could not access clipboard. Please copy manually.', 'error');
+    }
+  };
+
+  const toggleSelectCode = (code: string) => {
+    setSelectedCodes(prev => (
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+    ));
   };
 
   // Fetch settings & invites on mount
@@ -705,7 +766,7 @@ export default function GroupInvitesManagerPage({
               <button
                 key={st}
                 onClick={() => setStatusFilter(st)}
-                className={`px-3 py-1 text-xs rounded-lg font-semibold capitalize transition-all cursor-pointer shrink-0 ${
+                className={`px-3 py-1 text-xs rounded-lg font-semibold capitalize transition-all cursor-pointer shrink-0 whitespace-nowrap ${
                   statusFilter === st
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                     : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-850'
@@ -716,6 +777,101 @@ export default function GroupInvitesManagerPage({
             ))}
           </div>
         </div>
+
+        {/* Multi-Select & Copy Action Bar */}
+        {filteredInvites.length > 0 && (() => {
+          const displayedInvites = filteredInvites.slice().reverse();
+          const displayedCodes = displayedInvites.map(i => i.code);
+          const allVisibleSelected = displayedCodes.length > 0 && displayedCodes.every(c => selectedCodes.includes(c));
+          const selectedInvitesList = invites.filter(i => selectedCodes.includes(i.code));
+
+          return (
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-5 px-4 py-3 bg-slate-950/80 border border-slate-800 rounded-xl">
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (allVisibleSelected) {
+                      setSelectedCodes(prev => prev.filter(c => !displayedCodes.includes(c)));
+                    } else {
+                      setSelectedCodes(prev => Array.from(new Set([...prev, ...displayedCodes])));
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  {allVisibleSelected ? (
+                    <CheckSquare className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Square className="w-3.5 h-3.5 text-slate-400" />
+                  )}
+                  <span>{allVisibleSelected ? 'Deselect All' : `Select All (${displayedInvites.length})`}</span>
+                </button>
+
+                {selectedCodes.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-emerald-400 font-bold font-mono">
+                      {selectedCodes.length} selected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCodes([])}
+                      className="text-slate-400 hover:text-white underline text-[11px] cursor-pointer whitespace-nowrap"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  disabled={selectedInvitesList.length === 0}
+                  onClick={() => handleBulkCopyUrls(
+                    selectedInvitesList.map(i => i.url),
+                    'selected',
+                    'Selected'
+                  )}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-sky-500/15 hover:bg-sky-500/25 disabled:opacity-40 disabled:cursor-not-allowed text-sky-300 border border-sky-500/30 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap"
+                  title="Copy only the checked group links"
+                >
+                  {copiedKey === 'selected' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {copiedKey === 'selected'
+                      ? `Copied ${selectedInvitesList.length}!`
+                      : `Copy Selected (${selectedInvitesList.length})`}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleBulkCopyUrls(
+                    displayedInvites.map(i => i.url),
+                    'all',
+                    statusFilter === 'all' && !searchQuery ? 'All' : 'Filtered'
+                  )}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-slate-950 rounded-lg text-xs font-bold shadow-sm transition-all cursor-pointer whitespace-nowrap"
+                  title="Copy all currently listed group links"
+                >
+                  {copiedKey === 'all' ? (
+                    <Check className="w-3.5 h-3.5" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {copiedKey === 'all'
+                      ? `Copied All (${displayedInvites.length})!`
+                      : `Copy All (${displayedInvites.length})`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Group Cards */}
         {isLoading ? (
@@ -748,11 +904,14 @@ export default function GroupInvitesManagerPage({
               const isRequested = invite.status === 'requested';
               const isLowMembers = invite.status === 'members_too_low';
               const isQualifying = (invite.groupSize || 0) >= minMembers;
+              const isSelected = selectedCodes.includes(invite.code);
 
               return (
                 <div
                   key={invite.code}
                   className={`border rounded-2xl p-5 text-left relative overflow-hidden transition-all flex flex-col justify-between ${
+                    isSelected ? 'ring-2 ring-emerald-500/70 ' : ''
+                  }${
                     isRemoved
                       ? 'bg-rose-950/20 border-rose-500/30 hover:border-rose-500/50'
                       : isJoined
@@ -774,17 +933,32 @@ export default function GroupInvitesManagerPage({
                   }`} />
 
                   <div>
-                    {/* Top Header: Title & Badges */}
+                    {/* Top Header: Selection Checkbox, Title & Badges */}
                     <div className="flex items-start justify-between gap-3 mb-2">
-                      <div className="flex-1 min-w-0">
-                        <h4 className="text-sm font-bold text-white truncate" title={invite.groupName}>
-                          {invite.groupName || 'WhatsApp Group'}
-                        </h4>
-                        {invite.groupDescription && (
-                          <p className="text-[11px] text-slate-400 mt-1 line-clamp-2 leading-relaxed">
-                            {invite.groupDescription}
-                          </p>
-                        )}
+                      <div className="flex items-start gap-2.5 flex-1 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => toggleSelectCode(invite.code)}
+                          aria-label={`Select ${invite.groupName || invite.code}`}
+                          className="mt-0.5 shrink-0 text-slate-400 hover:text-emerald-400 transition-colors cursor-pointer"
+                          title={isSelected ? 'Deselect group link' : 'Select group link to copy'}
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="w-4 h-4 text-emerald-400" />
+                          ) : (
+                            <Square className="w-4 h-4" />
+                          )}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-sm font-bold text-white truncate" title={invite.groupName}>
+                            {invite.groupName || 'WhatsApp Group'}
+                          </h4>
+                          {invite.groupDescription && (
+                            <p className="text-[11px] text-slate-400 mt-1 line-clamp-2 leading-relaxed">
+                              {invite.groupDescription}
+                            </p>
+                          )}
+                        </div>
                       </div>
 
                       {/* Status Badge */}
@@ -918,15 +1092,16 @@ export default function GroupInvitesManagerPage({
                       {/* Copy Link */}
                       <button
                         type="button"
-                        onClick={() => {
-                          navigator.clipboard.writeText(invite.url);
-                          notify('Group link copied to clipboard!', 'info');
-                        }}
-                        className="px-2 py-1 bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                        onClick={() => handleBulkCopyUrls([invite.url], `single:${invite.code}`, invite.groupName || 'Link')}
+                        className="px-2 py-1 bg-slate-900 hover:bg-slate-850 text-slate-300 border border-slate-800 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
                         title="Copy invite URL"
                       >
-                        <Copy className="w-3 h-3" />
-                        <span>Copy</span>
+                        {copiedKey === `single:${invite.code}` ? (
+                          <Check className="w-3 h-3 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                        <span>{copiedKey === `single:${invite.code}` ? 'Copied' : 'Copy'}</span>
                       </button>
 
                       {/* Open Link */}
@@ -966,20 +1141,20 @@ export default function GroupInvitesManagerPage({
               <span>Add WhatsApp Group Link Manually</span>
             </h3>
             <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-              Paste any WhatsApp group invite link (<code className="text-emerald-400">chat.whatsapp.com/...</code>) to save it, resolve its member count, and trigger auto-join.
+              Paste one WhatsApp group link (<code className="text-emerald-400">chat.whatsapp.com/...</code>), multiple links, or an entire chat message containing text + links — all group links will be extracted automatically.
             </p>
 
             <form onSubmit={handleAddManualLink} className="space-y-4">
               <div>
                 <label className="text-[11px] font-bold text-slate-300 block mb-1">
-                  WhatsApp Group Invite Link or Code
+                  WhatsApp Group Invite Link(s), Code, or Message Text
                 </label>
-                <input
-                  type="text"
-                  placeholder="https://chat.whatsapp.com/..."
+                <textarea
+                  rows={4}
+                  placeholder={"https://chat.whatsapp.com/...\nOr paste text containing multiple group links"}
                   value={manualLinkInput}
                   onChange={(e) => setManualLinkInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 leading-relaxed"
                   required
                 />
               </div>

@@ -1,601 +1,601 @@
 [
   {
-    "id": "0zl1or",
-    "timestamp": "2026-10-17T07:08:01.417Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
+    "id": "js1c5a",
+    "timestamp": "2026-11-13T09:39:36.743Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "a1icxo",
-    "timestamp": "2026-10-17T07:08:02.637Z",
+    "id": "dsjuci",
+    "timestamp": "2026-11-13T09:39:41.752Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "947sgi",
-    "timestamp": "2026-10-17T07:08:03.616Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "e6pyue",
+    "timestamp": "2026-11-13T09:39:43.870Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "a1ze09",
-    "timestamp": "2026-10-17T07:09:03.630Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "1ci81g",
+    "timestamp": "2026-11-13T09:39:43.871Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "4iocra",
-    "timestamp": "2026-10-17T07:09:23.638Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "34p7wm",
-    "timestamp": "2026-10-17T07:09:43.651Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "fxhvgq",
-    "timestamp": "2026-10-17T07:10:03.665Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "86ktnj",
-    "timestamp": "2026-10-17T07:10:23.685Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "33ti21",
-    "timestamp": "2026-10-17T07:10:44.039Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "qb7b2n",
-    "timestamp": "2026-10-17T07:10:45.254Z",
+    "id": "piu0br",
+    "timestamp": "2026-11-13T09:39:48.880Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "u3cqw9",
-    "timestamp": "2026-10-17T07:10:46.205Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "vecgfl",
+    "timestamp": "2026-11-13T09:39:49.576Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "cq983",
-    "timestamp": "2026-10-17T07:11:31.653Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (936MB / 4096MB), Node Process RSS: 406MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "id": "o31uuj",
+    "timestamp": "2026-11-13T09:39:49.577Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "m22gie",
-    "timestamp": "2026-10-17T07:11:46.223Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "qjn1je",
-    "timestamp": "2026-10-17T07:12:06.235Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "3lwsqh",
-    "timestamp": "2026-10-17T07:12:26.246Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "3iwrbk",
-    "timestamp": "2026-10-17T07:12:46.260Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "8h2bnk",
-    "timestamp": "2026-10-17T07:13:06.275Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "2qmrmv",
-    "timestamp": "2026-10-17T07:13:26.610Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "fx5dp",
-    "timestamp": "2026-10-17T07:13:27.827Z",
+    "id": "0rmdja",
+    "timestamp": "2026-11-13T09:39:54.588Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "n8j8e9",
-    "timestamp": "2026-10-17T07:13:28.803Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "s6i0og",
+    "timestamp": "2026-11-13T09:39:59.689Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "l94jbq",
-    "timestamp": "2026-10-17T07:14:28.821Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "d2nek",
+    "timestamp": "2026-11-13T09:39:59.689Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "l2hrtf",
-    "timestamp": "2026-10-17T07:14:48.836Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "yj1b6",
-    "timestamp": "2026-10-17T07:15:08.847Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "9m322l",
-    "timestamp": "2026-10-17T07:15:28.862Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "e9ajs",
-    "timestamp": "2026-10-17T07:15:48.877Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "nikztb",
-    "timestamp": "2026-10-17T07:16:09.225Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "zo6x5",
-    "timestamp": "2026-10-17T07:16:10.440Z",
+    "id": "x7lv8p",
+    "timestamp": "2026-11-13T09:40:04.701Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "usljpl",
-    "timestamp": "2026-10-17T07:16:11.446Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "oi5ve",
+    "timestamp": "2026-11-13T09:40:06.213Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "nuh6zt",
-    "timestamp": "2026-10-17T07:16:31.654Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (936MB / 4096MB), Node Process RSS: 406MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "id": "xb6umh",
+    "timestamp": "2026-11-13T09:40:06.214Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "rbwsbn",
-    "timestamp": "2026-10-17T07:17:11.460Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "5j00ne",
-    "timestamp": "2026-10-17T07:17:31.470Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "jdtesd",
-    "timestamp": "2026-10-17T07:17:51.482Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "z69mvj",
-    "timestamp": "2026-10-17T07:18:11.498Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "p8xuph",
-    "timestamp": "2026-10-17T07:18:31.510Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "qi8sw",
-    "timestamp": "2026-10-17T07:18:51.863Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "ds24hw",
-    "timestamp": "2026-10-17T07:18:53.078Z",
+    "id": "8g29i7",
+    "timestamp": "2026-11-13T09:40:11.230Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "omw1df",
-    "timestamp": "2026-10-17T07:18:53.964Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "pkvqjp",
+    "timestamp": "2026-11-13T09:40:12.359Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "paf3yb",
-    "timestamp": "2026-10-17T07:19:53.979Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "dp1008",
+    "timestamp": "2026-11-13T09:40:12.360Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "f70rh9",
-    "timestamp": "2026-10-17T07:20:13.989Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "26zmi",
-    "timestamp": "2026-10-17T07:20:34.000Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "uju0i",
-    "timestamp": "2026-10-17T07:20:54.013Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "xmvhv7",
-    "timestamp": "2026-10-17T07:21:14.029Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "9urnlv",
-    "timestamp": "2026-10-17T07:21:31.655Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (936MB / 4096MB), Node Process RSS: 406MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "t745yg",
-    "timestamp": "2026-10-17T07:21:34.357Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "k9czvv",
-    "timestamp": "2026-10-17T07:21:35.572Z",
+    "id": "vw9x7w",
+    "timestamp": "2026-11-13T09:40:17.372Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "i626s",
-    "timestamp": "2026-10-17T07:21:36.484Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "9mrdii",
+    "timestamp": "2026-11-13T09:40:19.052Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "qh44r",
-    "timestamp": "2026-10-17T07:22:36.499Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "6wumif",
+    "timestamp": "2026-11-13T09:40:19.053Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "8xt2rm",
-    "timestamp": "2026-10-17T07:22:56.511Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "l4rpbq",
-    "timestamp": "2026-10-17T07:23:16.527Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "msmx1",
-    "timestamp": "2026-10-17T07:23:36.541Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "f9psl",
-    "timestamp": "2026-10-17T07:23:56.567Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "jx6oe9",
-    "timestamp": "2026-10-17T07:24:16.910Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "ytgt5",
-    "timestamp": "2026-10-17T07:24:18.128Z",
+    "id": "vavk6br",
+    "timestamp": "2026-11-13T09:40:24.062Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "p6z5ha",
-    "timestamp": "2026-10-17T07:24:19.054Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "eb0i4o",
+    "timestamp": "2026-11-13T09:40:29.625Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "78fshl",
-    "timestamp": "2026-10-17T07:25:19.069Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "84bqh",
+    "timestamp": "2026-11-13T09:40:29.626Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "ywenni",
-    "timestamp": "2026-10-17T07:25:39.082Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "7rwhi",
-    "timestamp": "2026-10-17T07:25:59.092Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "7hfj2s",
-    "timestamp": "2026-10-17T07:26:19.111Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "ivcun7",
-    "timestamp": "2026-10-17T07:26:31.656Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (937MB / 4096MB), Node Process RSS: 408MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "zga86",
-    "timestamp": "2026-10-17T07:26:39.120Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "4yg7t",
-    "timestamp": "2026-10-17T07:26:59.458Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "lywdos",
-    "timestamp": "2026-10-17T07:27:00.673Z",
+    "id": "uedd5s",
+    "timestamp": "2026-11-13T09:40:34.635Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "bs9a9",
-    "timestamp": "2026-10-17T07:27:01.668Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "fn64sh",
+    "timestamp": "2026-11-13T09:40:38.636Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "konhj",
-    "timestamp": "2026-10-17T07:28:01.678Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "15rys",
+    "timestamp": "2026-11-13T09:40:38.636Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "tfng6",
-    "timestamp": "2026-10-17T07:28:21.696Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "u5m5z",
-    "timestamp": "2026-10-17T07:28:41.711Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "byu4e7",
-    "timestamp": "2026-10-17T07:29:01.725Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "cu9cgb",
-    "timestamp": "2026-10-17T07:29:21.752Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "4y9ut",
-    "timestamp": "2026-10-17T07:29:42.125Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "lkvpih",
-    "timestamp": "2026-10-17T07:29:43.339Z",
+    "id": "d31efj",
+    "timestamp": "2026-11-13T09:40:43.647Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "5zm7xz",
-    "timestamp": "2026-10-17T07:29:44.217Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "xmf4u3",
+    "timestamp": "2026-11-13T09:40:46.122Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "ylqlzm",
-    "timestamp": "2026-10-17T07:30:44.235Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "jp7ued",
+    "timestamp": "2026-11-13T09:40:46.123Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "edawc8",
-    "timestamp": "2026-10-17T07:31:04.265Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "62xygd",
-    "timestamp": "2026-10-17T07:31:24.263Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "jqu52",
-    "timestamp": "2026-10-17T07:31:31.658Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 23% (938MB / 4096MB), Node Process RSS: 408MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "g3cekc",
-    "timestamp": "2026-10-17T07:37:39.708Z",
+    "id": "3i7gqq",
+    "timestamp": "2026-11-13T09:40:51.133Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "sp0sio",
-    "timestamp": "2026-10-17T07:37:40.940Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "w4i1m8",
+    "timestamp": "2026-11-13T09:40:52.417Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "y60np",
-    "timestamp": "2026-10-17T07:37:48.992Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 35% (1441MB / 4096MB), Node Process RSS: 577MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
+    "id": "noenzg",
+    "timestamp": "2026-11-13T09:40:52.418Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "ew0ogo",
-    "timestamp": "2026-10-17T07:38:40.864Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "0w8vmk",
-    "timestamp": "2026-10-17T07:39:00.890Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "iyzj6o",
-    "timestamp": "2026-10-17T07:39:20.908Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "s6tosa",
-    "timestamp": "2026-10-17T07:39:40.927Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "7r3trj",
-    "timestamp": "2026-10-17T07:40:00.943Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "sgefmc",
-    "timestamp": "2026-10-17T07:40:21.275Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "57t4fx",
-    "timestamp": "2026-10-17T07:40:22.493Z",
+    "id": "s8lksq",
+    "timestamp": "2026-11-13T09:40:57.433Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "nh45vg",
-    "timestamp": "2026-10-17T07:40:23.519Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "83n07o",
+    "timestamp": "2026-11-13T09:41:02.548Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "fcdjuc",
-    "timestamp": "2026-10-17T07:41:23.532Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "f6ken8",
+    "timestamp": "2026-11-13T09:41:02.549Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "zm557k",
-    "timestamp": "2026-10-17T07:41:43.552Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "bj9333",
-    "timestamp": "2026-10-17T07:42:03.571Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "h0yt1pd",
-    "timestamp": "2026-10-17T07:42:23.590Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "ykxzg",
-    "timestamp": "2026-10-17T07:42:38.991Z",
-    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 24% (984MB / 4096MB), Node Process RSS: 418MB, Active WhatsApp Sessions: 1. Host system status is healthy.",
-    "type": "info"
-  },
-  {
-    "id": "f1p3bn",
-    "timestamp": "2026-10-17T07:42:43.603Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "4z508",
-    "timestamp": "2026-10-17T07:43:03.995Z",
-    "message": "[SESSION: primary] QR scan timed out. Refreshing dynamic QR code...",
-    "type": "info"
-  },
-  {
-    "id": "cg70rn",
-    "timestamp": "2026-10-17T07:43:05.212Z",
+    "id": "vg9s7r",
+    "timestamp": "2026-11-13T09:41:07.561Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "5wu7oq",
-    "timestamp": "2026-10-17T07:43:06.198Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "rmpxh",
+    "timestamp": "2026-11-13T09:41:12.093Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
     "type": "info"
   },
   {
-    "id": "ew2crr",
-    "timestamp": "2026-10-17T07:44:06.221Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "id": "mz1ous",
+    "timestamp": "2026-11-13T09:41:12.093Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
     "type": "info"
   },
   {
-    "id": "yuay1j",
-    "timestamp": "2026-10-17T07:44:26.230Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "cgh9ou",
-    "timestamp": "2026-10-17T07:44:46.241Z",
-    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
-    "type": "info"
-  },
-  {
-    "id": "cx37ej",
-    "timestamp": "2026-10-17T07:45:08.632Z",
+    "id": "evf3uq",
+    "timestamp": "2026-11-13T09:41:17.107Z",
     "message": "[SESSION: primary] Starting WhatsApp connection...",
     "type": "info"
   },
   {
-    "id": "6lqt4s",
-    "timestamp": "2026-10-17T07:45:09.776Z",
+    "id": "xxvc0k",
+    "timestamp": "2026-11-13T09:41:19.478Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "4gnkco",
+    "timestamp": "2026-11-13T09:41:19.479Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "m2c51i",
+    "timestamp": "2026-11-13T09:41:24.488Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "aug29p",
+    "timestamp": "2026-11-13T09:41:26.733Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "qiift",
+    "timestamp": "2026-11-13T09:41:26.733Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "0qfl3j",
+    "timestamp": "2026-11-13T09:41:31.748Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "yllyps",
+    "timestamp": "2026-11-13T09:41:32.930Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "5fa2jr",
+    "timestamp": "2026-11-13T09:41:32.931Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "olglpc",
+    "timestamp": "2026-11-13T09:41:37.940Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "pvixs",
+    "timestamp": "2026-11-13T09:41:41.343Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "tdkr5j",
+    "timestamp": "2026-11-13T09:41:41.344Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "apclv",
+    "timestamp": "2026-11-13T09:41:46.353Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "nxoqr",
+    "timestamp": "2026-11-13T09:41:49.865Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "t72yzu",
+    "timestamp": "2026-11-13T09:41:49.865Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "jjng3d",
+    "timestamp": "2026-11-13T09:41:54.874Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "1gji1p",
+    "timestamp": "2026-11-13T09:41:55.689Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "tatc9o",
+    "timestamp": "2026-11-13T09:41:55.689Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "psqy44",
+    "timestamp": "2026-11-13T09:42:00.700Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "e6h2gn",
+    "timestamp": "2026-11-13T09:42:02.714Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "9keue5",
+    "timestamp": "2026-11-13T09:42:02.714Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "4kcqq",
+    "timestamp": "2026-11-13T09:42:07.724Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "rivt4s",
+    "timestamp": "2026-11-13T09:42:11.811Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "v9h9wq",
+    "timestamp": "2026-11-13T09:42:11.812Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "l1nykl",
+    "timestamp": "2026-11-13T09:42:16.820Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "8lbjf8",
+    "timestamp": "2026-11-13T09:42:21.066Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "yal8c",
+    "timestamp": "2026-11-13T09:42:21.066Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "tykk67",
+    "timestamp": "2026-11-13T09:42:26.078Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "hgqg3j",
+    "timestamp": "2026-11-13T09:42:28.551Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "lkf99",
+    "timestamp": "2026-11-13T09:42:28.551Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "xat2sh",
+    "timestamp": "2026-11-13T09:42:33.563Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "takw4b",
+    "timestamp": "2026-11-13T09:42:38.547Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "e0ace",
+    "timestamp": "2026-11-13T09:42:38.547Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "caiwb",
+    "timestamp": "2026-11-13T09:42:43.558Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "0pm045",
+    "timestamp": "2026-11-13T09:42:48.570Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "boqa82",
+    "timestamp": "2026-11-13T09:42:48.570Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "ldv9t3",
+    "timestamp": "2026-11-13T09:42:53.580Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "uhxch",
+    "timestamp": "2026-11-13T09:42:55.957Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "ya5zkn",
+    "timestamp": "2026-11-13T09:42:55.958Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "avwfp",
+    "timestamp": "2026-11-13T09:43:00.973Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "8se80a",
+    "timestamp": "2026-11-13T09:43:03.271Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "tigpdq",
+    "timestamp": "2026-11-13T09:43:03.272Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "ceemct",
+    "timestamp": "2026-11-13T09:43:08.283Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "7bjnkn",
+    "timestamp": "2026-11-13T09:43:10.328Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "qd32x",
+    "timestamp": "2026-11-13T09:43:10.329Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "fwenr",
+    "timestamp": "2026-11-13T09:43:15.339Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "xv7mwe",
+    "timestamp": "2026-11-13T09:43:20.286Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "mdavak",
+    "timestamp": "2026-11-13T09:43:20.287Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "ecj8bf",
+    "timestamp": "2026-11-13T09:43:25.296Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "4rjnr5",
+    "timestamp": "2026-11-13T09:43:29.387Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "ylh5f1",
+    "timestamp": "2026-11-13T09:43:29.387Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "caxz4n",
+    "timestamp": "2026-11-13T09:43:34.395Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "91jdvn",
+    "timestamp": "2026-11-13T09:43:39.208Z",
+    "message": "[SESSION: primary] Connection closed/paused (Reason code: 405, message: \"Connection Failure\").",
+    "type": "info"
+  },
+  {
+    "id": "cirgpm",
+    "timestamp": "2026-11-13T09:43:39.209Z",
+    "message": "[SESSION: primary] Recreating socket and performing clean reconnect in 5 seconds...",
+    "type": "info"
+  },
+  {
+    "id": "gjjls",
+    "timestamp": "2026-11-13T09:43:44.217Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "7mc2gm",
+    "timestamp": "2026-11-13T09:43:47.797Z",
+    "message": "[SESSION: primary] Starting WhatsApp connection...",
+    "type": "info"
+  },
+  {
+    "id": "8kfjs9",
+    "timestamp": "2026-11-13T09:44:07.049Z",
+    "message": "[SYSTEM MONITOR] Host Resources: CPU Core Load: 0% (2 Virtual Cores in Use), Total RAM Utilized: 42% (1718MB / 4096MB), Node Process RSS: 844MB, Active WhatsApp Sessions: 0. Host system status is healthy.",
+    "type": "info"
+  },
+  {
+    "id": "vnr3vn",
+    "timestamp": "2026-11-13T09:44:07.285Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "4hmazg",
+    "timestamp": "2026-11-13T09:45:07.214Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "erfdn",
+    "timestamp": "2026-11-13T09:45:27.229Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "upgiwr",
+    "timestamp": "2026-11-13T09:45:47.249Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "w8efgq",
+    "timestamp": "2026-11-13T09:46:07.243Z",
+    "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
+    "type": "info"
+  },
+  {
+    "id": "6xudwh",
+    "timestamp": "2026-11-13T09:46:27.250Z",
     "message": "[SESSION: primary] New WhatsApp Web QR Code generated.",
     "type": "info"
   }

@@ -25,7 +25,10 @@ import {
   Code2,
   Play,
   Bookmark,
-  Key
+  Key,
+  BookUser,
+  Search,
+  Upload
 } from 'lucide-react';
 
 interface StatusBroadcastPageProps {
@@ -70,6 +73,14 @@ export default function StatusBroadcastPage({
   const [textContent, setTextContent] = useState('');
   const [selectedBgHex, setSelectedBgHex] = useState('#075E54');
   const [selectedFont, setSelectedFont] = useState(1);
+  const [textBgMode, setTextBgMode] = useState<'color' | 'image'>('color');
+  const [textBgImageSource, setTextBgImageSource] = useState<'upload' | 'url'>('upload');
+  const [textBgImageData, setTextBgImageData] = useState<string>('');
+  const [textBgImageName, setTextBgImageName] = useState<string>('');
+  const [textBgImageUrl, setTextBgImageUrl] = useState<string>('');
+  const [textBgOverlayOpacity, setTextBgOverlayOpacity] = useState<number>(0.4);
+  const [textBgTextColor, setTextBgTextColor] = useState<'#FFFFFF' | '#0F172A'>('#FFFFFF');
+  const [isLoadingBgUrl, setIsLoadingBgUrl] = useState(false);
   
   // Media source state
   const [mediaSource, setMediaSource] = useState<'upload' | 'url'>('upload');
@@ -80,7 +91,28 @@ export default function StatusBroadcastPage({
   const [isUploading, setIsUploading] = useState(false);
 
   // Targeting Distributions (statusJidList)
-  const [targetType, setTargetType] = useState<'all_leads' | 'group_members' | 'custom'>('all_leads');
+  const [targetType, setTargetType] = useState<'phone_contacts' | 'all_leads' | 'group_members' | 'custom'>('phone_contacts');
+  const [phoneContacts, setPhoneContacts] = useState<Array<{
+    jid: string;
+    phone?: string;
+    lid?: string;
+    name?: string;
+    notify?: string;
+    isSavedContact?: boolean;
+    source?: string;
+  }>>([]);
+  const [savedPhoneContactsCount, setSavedPhoneContactsCount] = useState(0);
+  const [isLoadingPhoneContacts, setIsLoadingPhoneContacts] = useState(false);
+  const [isSyncingPhoneContacts, setIsSyncingPhoneContacts] = useState(false);
+  const [isImportingVcf, setIsImportingVcf] = useState(false);
+  const [phoneContactSearch, setPhoneContactSearch] = useState('');
+  const [excludedPhoneContactJids, setExcludedPhoneContactJids] = useState<string[]>([]);
+  const [includeLeadsWithPhoneContacts, setIncludeLeadsWithPhoneContacts] = useState(false);
+  const [savedContactsOnlyFilter, setSavedContactsOnlyFilter] = useState(false);
+  const [defaultCountryCode, setDefaultCountryCode] = useState('');
+  const [showVcfHelper, setShowVcfHelper] = useState(false);
+  const [previewImgError, setPreviewImgError] = useState(false);
+
   const [savedGroups, setSavedGroups] = useState<any[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [excludeContacts, setExcludeContacts] = useState(true);
@@ -92,6 +124,7 @@ export default function StatusBroadcastPage({
 
   // Silent Mentions / Tagging
   const [mentionsInput, setMentionsInput] = useState('');
+  const [tagGroupsInStatus, setTagGroupsInStatus] = useState(true);
   const [tagGroupMembers, setTagGroupMembers] = useState(false);
 
   // Publishing / Sending state
@@ -99,7 +132,7 @@ export default function StatusBroadcastPage({
   const [results, setResults] = useState<any[] | null>(null);
 
   // Delayed & Batched status schedules
-  const [sendMode, setSendMode] = useState<'instant' | 'delayed'>('delayed');
+  const [sendMode, setSendMode] = useState<'instant' | 'delayed'>('instant');
   const [delayMinutes, setDelayMinutes] = useState<number>(5);
   const [secondDelayMinutes, setSecondDelayMinutes] = useState<number>(10);
   const [batchSize, setBatchSize] = useState<number>(5);
@@ -174,6 +207,173 @@ export default function StatusBroadcastPage({
       .finally(() => setIsLoadingCodes(false));
   };
 
+  const handleBgImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setFeedback({ type: 'error', text: 'Please select a valid image file (PNG, JPG, WEBP) for the text background.' });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      if (typeof event.target?.result === 'string') {
+        setTextBgImageData(event.target.result);
+        setTextBgImageName(file.name);
+        setTextBgMode('image');
+        setTextBgImageSource('upload');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const resolveTextBgDataUrl = async (): Promise<string> => {
+    if (textBgImageSource === 'upload') {
+      if (!textBgImageData) {
+        throw new Error('Please upload a background image first.');
+      }
+      return textBgImageData;
+    }
+    const cleanUrl = textBgImageUrl.trim();
+    if (!cleanUrl) {
+      throw new Error('Please enter a background image URL first.');
+    }
+    if (textBgImageData && textBgImageName === cleanUrl) {
+      return textBgImageData;
+    }
+    setIsLoadingBgUrl(true);
+    try {
+      const res = await fetchWithAuth('/api/status/fetch-bg-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: cleanUrl })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success || !data.dataUrl) {
+        throw new Error(data.error || 'Failed to load background image URL.');
+      }
+      setTextBgImageData(data.dataUrl);
+      setTextBgImageName(cleanUrl);
+      return data.dataUrl;
+    } finally {
+      setIsLoadingBgUrl(false);
+    }
+  };
+
+  const composeTextStatusWithBgImage = async (): Promise<string> => {
+    const bgDataUrl = await resolveTextBgDataUrl();
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const imageEl = new Image();
+      imageEl.onload = () => resolve(imageEl);
+      imageEl.onerror = () => reject(new Error('Could not decode the selected background image.'));
+      imageEl.src = bgDataUrl;
+    });
+
+    const W = 1080;
+    const H = 1920;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas rendering is unavailable in this browser.');
+    }
+
+    // Cover-crop background image onto 1080x1920 frame
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, W, H);
+    const scale = Math.max(W / img.width, H / img.height);
+    const drawW = img.width * scale;
+    const drawH = img.height * scale;
+    const drawX = (W - drawW) / 2;
+    const drawY = (H - drawH) / 2;
+    ctx.drawImage(img, drawX, drawY, drawW, drawH);
+
+    // Optional dim/scrim overlay for text legibility
+    if (textBgOverlayOpacity > 0) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${textBgOverlayOpacity})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // Typography matching selectedFont
+    const rawText = selectedFont === 5 ? textContent.toUpperCase() : textContent;
+    const getFontSpec = (px: number) => {
+      if (selectedFont === 2) return `italic 600 ${px}px Georgia, "Times New Roman", serif`;
+      if (selectedFont === 3) return `500 ${px}px "Comic Sans MS", "Trebuchet MS", system-ui, sans-serif`;
+      if (selectedFont === 5) return `700 ${px}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      return `600 ${px}px "Plus Jakarta Sans", system-ui, -apple-system, sans-serif`;
+    };
+
+    const maxWidth = W - 150;
+    const maxHeight = H - 360;
+
+    const wrapLines = (fontSize: number): string[] => {
+      ctx.font = getFontSpec(fontSize);
+      const out: string[] = [];
+      const paragraphs = rawText.split('\n');
+      for (const para of paragraphs) {
+        if (para === '') {
+          out.push('');
+          continue;
+        }
+        const words = para.split(/\s+/);
+        let current = '';
+        for (const word of words) {
+          const candidate = current ? `${current} ${word}` : word;
+          if (ctx.measureText(candidate).width <= maxWidth) {
+            current = candidate;
+          } else {
+            if (current) out.push(current);
+            // Break extra-long single token if wider than maxWidth
+            if (ctx.measureText(word).width > maxWidth) {
+              let chunk = '';
+              for (const ch of word) {
+                if (ctx.measureText(chunk + ch).width <= maxWidth) {
+                  chunk += ch;
+                } else {
+                  if (chunk) out.push(chunk);
+                  chunk = ch;
+                }
+              }
+              current = chunk;
+            } else {
+              current = word;
+            }
+          }
+        }
+        if (current) out.push(current);
+      }
+      return out;
+    };
+
+    let chosenSize = 60;
+    let lines = wrapLines(chosenSize);
+    while (chosenSize > 28 && lines.length * (chosenSize * 1.38) > maxHeight) {
+      chosenSize -= 4;
+      lines = wrapLines(chosenSize);
+    }
+
+    const lineHeight = chosenSize * 1.38;
+    const totalHeight = lines.length * lineHeight;
+    let y = (H - totalHeight) / 2 + lineHeight * 0.72;
+
+    ctx.font = getFontSpec(chosenSize);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = textBgTextColor;
+    ctx.shadowColor = textBgTextColor === '#FFFFFF' ? 'rgba(0, 0, 0, 0.72)' : 'rgba(255, 255, 255, 0.5)';
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 3;
+
+    for (const line of lines) {
+      ctx.fillText(line, W / 2, y, maxWidth);
+      y += lineHeight;
+    }
+
+    return canvas.toDataURL('image/jpeg', 0.92);
+  };
+
   const handleSaveStatusCode = async () => {
     const cleanCode = saveCodeInput.replace(/\D/g, '').trim();
     if (cleanCode.length !== 4) {
@@ -184,6 +384,16 @@ export default function StatusBroadcastPage({
     if (statusType === 'text' && !textContent.trim()) {
       setFeedback({ type: 'error', text: 'Please write text content before saving status as a code.' });
       return;
+    }
+    if (statusType === 'text' && textBgMode === 'image') {
+      if (textBgImageSource === 'upload' && !textBgImageData) {
+        setFeedback({ type: 'error', text: 'Please upload a background image for your text status or switch back to Classic Colors.' });
+        return;
+      }
+      if (textBgImageSource === 'url' && !textBgImageUrl.trim()) {
+        setFeedback({ type: 'error', text: 'Please enter a background image URL or switch back to Classic Colors.' });
+        return;
+      }
     }
     if (statusType !== 'text') {
       if (mediaSource === 'upload' && !mediaData) {
@@ -198,9 +408,16 @@ export default function StatusBroadcastPage({
 
     const customMentions = mentionsInput
       .split(',')
-      .map(n => n.trim().replace(/\D/g, ''))
+      .map(n => n.trim())
       .filter(Boolean)
-      .map(num => `${num}@s.whatsapp.net`);
+      .map(entry => {
+        if (entry.endsWith('@g.us') || entry.endsWith('@s.whatsapp.net') || entry.endsWith('@lid')) {
+          return entry;
+        }
+        const digits = entry.replace(/\D/g, '');
+        return digits ? `${digits}@s.whatsapp.net` : '';
+      })
+      .filter(Boolean);
 
     const finalMentions = (targetType === 'group_members' && tagGroupMembers)
       ? Array.from(new Set([...customMentions, ...groupMembersList]))
@@ -208,6 +425,9 @@ export default function StatusBroadcastPage({
 
     setIsSavingCode(true);
     try {
+      const usingBgImage = statusType === 'text' && textBgMode === 'image';
+      const renderedBgCardData = usingBgImage ? await composeTextStatusWithBgImage() : undefined;
+
       const response = await fetchWithAuth('/api/saved-codes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -215,16 +435,21 @@ export default function StatusBroadcastPage({
           code: cleanCode,
           isStatus: true,
           recipientType: 'status',
-          statusType,
-          message: textContent,
-          backgroundColor: statusType === 'text' ? selectedBgHex : undefined,
-          font: statusType === 'text' ? selectedFont : undefined,
-          attachmentType: statusType === 'text' ? 'none' : statusType,
-          attachmentUrl: mediaSource === 'url' ? mediaUrl : undefined,
-          attachmentData: mediaSource === 'upload' ? mediaData : undefined,
-          attachmentName: mediaSource === 'upload' ? mediaName : 'status-attachment',
+          statusType: usingBgImage ? 'image' : statusType,
+          message: usingBgImage ? '' : textContent,
+          backgroundColor: statusType === 'text' && !usingBgImage ? selectedBgHex : undefined,
+          font: statusType === 'text' && !usingBgImage ? selectedFont : undefined,
+          attachmentType: usingBgImage ? 'image' : (statusType === 'text' ? 'none' : statusType),
+          attachmentUrl: !usingBgImage && mediaSource === 'url' ? mediaUrl : undefined,
+          attachmentData: usingBgImage ? renderedBgCardData : (mediaSource === 'upload' ? mediaData : undefined),
+          attachmentName: usingBgImage ? 'text-bg-status.jpg' : (mediaSource === 'upload' ? mediaName : 'status-attachment'),
           sessionIds: selectedSessionIds,
           statusJidList: getCompiledJids(),
+          groupIds: targetType === 'group_members' ? selectedGroupIds : [],
+          tagGroups: targetType === 'group_members' ? tagGroupsInStatus : false,
+          tagGroupMembers: targetType === 'group_members' ? tagGroupMembers : false,
+          audienceMode: targetType,
+          includeLeads: targetType === 'phone_contacts' ? includeLeadsWithPhoneContacts : (targetType === 'group_members' ? !excludeContacts : false),
           mentions: finalMentions
         })
       });
@@ -276,9 +501,90 @@ export default function StatusBroadcastPage({
     }
   };
 
-  // Fetch initial helper data (leads, groups & saved codes)
+  const fetchPhoneContacts = async () => {
+    setIsLoadingPhoneContacts(true);
+    try {
+      const res = await fetchWithAuth('/api/contacts');
+      const data = await res.json();
+      if (data.success && Array.isArray(data.contacts)) {
+        setPhoneContacts(data.contacts);
+        setSavedPhoneContactsCount(typeof data.savedCount === 'number' ? data.savedCount : data.contacts.filter((c: any) => c.isSavedContact).length);
+      }
+    } catch (err) {
+      console.error('Error fetching phone contacts:', err);
+    } finally {
+      setIsLoadingPhoneContacts(false);
+    }
+  };
+
+  const handleSyncPhoneContacts = async () => {
+    setIsSyncingPhoneContacts(true);
+    try {
+      const res = await fetchWithAuth('/api/contacts/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (Array.isArray(data.contacts)) {
+          setPhoneContacts(data.contacts);
+          setSavedPhoneContactsCount(typeof data.savedCount === 'number' ? data.savedCount : data.contacts.filter((c: any) => c.isSavedContact).length);
+        }
+        setFeedback({ type: 'success', text: data.message || 'Phone contacts synced successfully!' });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to sync phone contacts.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Network error syncing phone contacts.' });
+    } finally {
+      setIsSyncingPhoneContacts(false);
+    }
+  };
+
+  const handleVcfFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setIsImportingVcf(true);
+    try {
+      const text = await file.text();
+      const res = await fetchWithAuth('/api/contacts/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vcfContent: text,
+          defaultCountryCode: defaultCountryCode.replace(/\D/g, '')
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (Array.isArray(data.contacts)) {
+          setPhoneContacts(data.contacts);
+          setSavedPhoneContactsCount(typeof data.savedCount === 'number' ? data.savedCount : data.contacts.filter((c: any) => c.isSavedContact).length);
+        }
+        setShowVcfHelper(false);
+        setFeedback({ type: 'success', text: data.message || 'Contacts imported from .VCF successfully!' });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to parse .VCF contacts file.' });
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', text: err.message || 'Error reading .VCF file.' });
+    } finally {
+      setIsImportingVcf(false);
+    }
+  };
+
+  const togglePhoneContactExclusion = (jid: string) => {
+    setExcludedPhoneContactJids(prev =>
+      prev.includes(jid) ? prev.filter(item => item !== jid) : [...prev, jid]
+    );
+  };
+
+  // Fetch initial helper data (phone contacts, leads, groups & saved codes)
   useEffect(() => {
     fetchSavedCodes();
+    fetchPhoneContacts();
 
     // Fetch Leads count
     fetchWithAuth('/api/leads')
@@ -318,8 +624,8 @@ export default function StatusBroadcastPage({
       const match = savedGroups.find(g => g.jid === gid);
       if (match && Array.isArray(match.participants)) {
         match.participants.forEach((p: string) => {
-          if (typeof p === 'string' && !p.endsWith('@lid')) {
-            uniqueParticipants.add(p);
+          if (typeof p === 'string' && p.trim()) {
+            uniqueParticipants.add(p.trim());
           }
         });
       }
@@ -413,7 +719,24 @@ export default function StatusBroadcastPage({
   };
 
   // Compile distribution list contacts JIDs
+  const getActivePhoneContactJids = () => {
+    const base = savedContactsOnlyFilter
+      ? phoneContacts.filter(c => c.isSavedContact)
+      : phoneContacts;
+    const active = base
+      .filter(c => c.jid && !excludedPhoneContactJids.includes(c.jid))
+      .map(c => c.jid);
+    if (includeLeadsWithPhoneContacts) {
+      const leadJids = leadsList.map(l => l.jid).filter(Boolean);
+      return Array.from(new Set([...active, ...leadJids]));
+    }
+    return active;
+  };
+
   const getCompiledJids = () => {
+    if (targetType === 'phone_contacts') {
+      return getActivePhoneContactJids();
+    }
     if (targetType === 'all_leads') {
       return leadsList.map(l => l.jid).filter(Boolean);
     }
@@ -453,30 +776,93 @@ export default function StatusBroadcastPage({
         setFeedback({ type: 'error', text: 'Please write some text content to post your text status.' });
         return;
       }
+      if (textBgMode === 'image') {
+        if (textBgImageSource === 'upload' && !textBgImageData) {
+          setFeedback({ type: 'error', text: 'Please upload a background image for your text status or switch back to Classic Colors.' });
+          return;
+        }
+        if (textBgImageSource === 'url' && !textBgImageUrl.trim()) {
+          setFeedback({ type: 'error', text: 'Please enter a background image URL or switch back to Classic Colors.' });
+          return;
+        }
+      }
+    }
+
+    if (targetType === 'phone_contacts' && targetJids.length === 0) {
+      setFeedback({ type: 'error', text: 'No phone contacts selected yet. Click "Sync from Phone" or import a .VCF file first so your saved contacts can view the status.' });
+      return;
+    }
+
+    if (targetType === 'group_members' && selectedGroupIds.length === 0) {
+      setFeedback({ type: 'error', text: 'Please select at least one WhatsApp group to publish and tag.' });
+      return;
+    }
+
+    if (targetType === 'custom' && targetJids.length === 0) {
+      setFeedback({ type: 'error', text: 'Please enter at least one valid phone number with country code.' });
+      return;
     }
 
     setIsPublishing(true);
     setFeedback(null);
 
-    if (sendMode === 'delayed' || (startTime && startTime.trim() !== '')) {
+    const usingBgImage = statusType === 'text' && textBgMode === 'image';
+    let renderedBgCardData: string | undefined;
+    if (usingBgImage) {
+      try {
+        renderedBgCardData = await composeTextStatusWithBgImage();
+      } catch (renderErr: any) {
+        setFeedback({ type: 'error', text: renderErr?.message || 'Failed to render text with background image.' });
+        setIsPublishing(false);
+        return;
+      }
+    }
+
+    const customMentions = mentionsInput
+      .split(',')
+      .map(n => n.trim())
+      .filter(Boolean)
+      .map(entry => {
+        if (entry.endsWith('@g.us') || entry.endsWith('@s.whatsapp.net') || entry.endsWith('@lid')) {
+          return entry;
+        }
+        const digits = entry.replace(/\D/g, '');
+        return digits ? `${digits}@s.whatsapp.net` : '';
+      })
+      .filter(Boolean);
+
+    const effectiveStatusType = usingBgImage ? 'image' : statusType;
+    const effectiveText = usingBgImage ? '' : textContent;
+    const effectiveAttachmentType = usingBgImage ? 'image' : (statusType === 'text' ? 'none' : statusType);
+    const effectiveAttachmentUrl = !usingBgImage && mediaSource === 'url' ? mediaUrl : undefined;
+    const effectiveAttachmentData = usingBgImage ? renderedBgCardData : (mediaSource === 'upload' ? mediaData : undefined);
+    const effectiveAttachmentName = usingBgImage ? 'text-bg-status.jpg' : (mediaSource === 'upload' ? mediaName : 'status-attachment');
+
+    const shouldUseSchedule = (targetType === 'group_members' && sendMode === 'delayed') || (startTime && startTime.trim() !== '');
+    if (shouldUseSchedule) {
       const schedulePayload = {
         sessionIds: selectedSessionIds,
-        statusType,
-        text: textContent,
-        backgroundColor: statusType === 'text' ? selectedBgHex : undefined,
-        font: statusType === 'text' ? selectedFont : undefined,
-        attachmentType: statusType === 'text' ? 'none' : statusType,
-        attachmentUrl: mediaSource === 'url' ? mediaUrl : undefined,
-        attachmentData: mediaSource === 'upload' ? mediaData : undefined,
-        attachmentName: mediaSource === 'upload' ? mediaName : 'status-attachment',
+        statusType: effectiveStatusType,
+        text: effectiveText,
+        backgroundColor: statusType === 'text' && !usingBgImage ? selectedBgHex : undefined,
+        font: statusType === 'text' && !usingBgImage ? selectedFont : undefined,
+        attachmentType: effectiveAttachmentType,
+        attachmentUrl: effectiveAttachmentUrl,
+        attachmentData: effectiveAttachmentData,
+        attachmentName: effectiveAttachmentName,
         groupMembers: targetJids,
         groupIds: targetType === 'group_members' ? selectedGroupIds : [],
+        tagGroups: targetType === 'group_members' ? tagGroupsInStatus : false,
+        tagGroupMembers: targetType === 'group_members' ? tagGroupMembers : false,
+        mentions: customMentions,
         batchMode: targetType === 'group_members' && batchMode === 'groups' ? 'groups' : 'members',
         delayMinutes,
         secondDelayMinutes: selectedGroupIds.length > 5 ? secondDelayMinutes : undefined,
         batchSize,
         startTime: startTime || undefined,
-        statusJidList: targetJids
+        statusJidList: targetJids,
+        audienceMode: targetType,
+        includeLeads: targetType === 'phone_contacts' ? includeLeadsWithPhoneContacts : (targetType === 'group_members' ? !excludeContacts : false)
       };
 
       try {
@@ -509,27 +895,25 @@ export default function StatusBroadcastPage({
       return;
     }
 
-    const customMentions = mentionsInput
-      .split(',')
-      .map(n => n.trim().replace(/\D/g, ''))
-      .filter(Boolean)
-      .map(num => `${num}@s.whatsapp.net`);
-
     const finalMentions = (targetType === 'group_members' && tagGroupMembers)
       ? Array.from(new Set([...customMentions, ...groupMembersList]))
       : customMentions;
 
     const payload = {
       sessionIds: selectedSessionIds,
-      statusType,
-      text: textContent,
-      backgroundColor: statusType === 'text' ? selectedBgHex : undefined,
-      font: statusType === 'text' ? selectedFont : undefined,
-      attachmentType: statusType === 'text' ? 'none' : statusType,
-      attachmentUrl: mediaSource === 'url' ? mediaUrl : undefined,
-      attachmentData: mediaSource === 'upload' ? mediaData : undefined,
-      attachmentName: mediaSource === 'upload' ? mediaName : 'status-attachment',
+      statusType: effectiveStatusType,
+      text: effectiveText,
+      backgroundColor: statusType === 'text' && !usingBgImage ? selectedBgHex : undefined,
+      font: statusType === 'text' && !usingBgImage ? selectedFont : undefined,
+      attachmentType: effectiveAttachmentType,
+      attachmentUrl: effectiveAttachmentUrl,
+      attachmentData: effectiveAttachmentData,
+      attachmentName: effectiveAttachmentName,
       statusJidList: targetJids,
+      groupIds: targetType === 'group_members' ? selectedGroupIds : [],
+      tagGroups: targetType === 'group_members' ? tagGroupsInStatus : false,
+      audienceMode: targetType,
+      includeLeads: targetType === 'phone_contacts' ? includeLeadsWithPhoneContacts : (targetType === 'group_members' ? !excludeContacts : false),
       mentions: finalMentions
     };
 
@@ -778,7 +1162,10 @@ export default function StatusBroadcastPage({
                           type="text"
                           placeholder={statusType === 'image' ? "https://example.com/status-image.png" : "https://example.com/status-video.mp4"}
                           value={mediaUrl}
-                          onChange={(e) => setMediaUrl(e.target.value)}
+                          onChange={(e) => {
+                            setMediaUrl(e.target.value);
+                            setPreviewImgError(false);
+                          }}
                           className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500 transition-colors font-mono"
                         />
                       </div>
@@ -812,13 +1199,39 @@ export default function StatusBroadcastPage({
               {/* Text styling presets (Only if Text status) */}
               {statusType === 'text' && (
                 <div className="space-y-4 pt-4 border-t border-slate-850">
-                  
-                  {/* Presets Grid */}
-                  <div className="space-y-2 text-left">
+                  {/* Background Mode Header & Toggle */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-left">
                     <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                       <Palette className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>WhatsApp Classic Colors</span>
+                      <span>WhatsApp Classic Colors &amp; Background</span>
                     </span>
+                    <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setTextBgMode('color')}
+                        className={`px-2.5 py-1 text-[10px] font-bold rounded-md cursor-pointer transition-colors ${
+                          textBgMode === 'color'
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Classic Colors
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTextBgMode('image')}
+                        className={`px-2.5 py-1 text-[10px] font-bold rounded-md cursor-pointer transition-colors ${
+                          textBgMode === 'image'
+                            ? 'bg-emerald-500/20 text-emerald-300'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Background Image
+                      </button>
+                    </div>
+                  </div>
+
+                  {textBgMode === 'color' ? (
                     <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
                       {BG_PRESETS.map((p) => (
                         <button
@@ -839,7 +1252,159 @@ export default function StatusBroadcastPage({
                         </button>
                       ))}
                     </div>
-                  </div>
+                  ) : (
+                    <div className="space-y-3 bg-slate-950/60 border border-slate-800 rounded-xl p-3.5 text-left">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setTextBgImageSource('upload')}
+                            className={`px-2.5 py-1 text-[10px] font-bold rounded cursor-pointer transition-colors ${
+                              textBgImageSource === 'upload' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                          >
+                            Upload Image
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTextBgImageSource('url')}
+                            className={`px-2.5 py-1 text-[10px] font-bold rounded cursor-pointer transition-colors ${
+                              textBgImageSource === 'url' ? 'bg-slate-800 text-white' : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                          >
+                            Image URL
+                          </button>
+                        </div>
+
+                        {(textBgImageData || textBgImageUrl) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTextBgImageData('');
+                              setTextBgImageName('');
+                              setTextBgImageUrl('');
+                            }}
+                            className="text-[10px] text-rose-400 hover:text-rose-300 font-bold inline-flex items-center gap-1 cursor-pointer"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Clear Image</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {textBgImageSource === 'upload' ? (
+                        <label className="flex items-center justify-between gap-3 border border-dashed border-slate-700 hover:border-emerald-500/50 rounded-xl px-3.5 py-3 bg-slate-950/50 cursor-pointer transition-colors">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <ImageIcon className={`w-4 h-4 shrink-0 ${textBgImageData ? 'text-emerald-400' : 'text-slate-500'}`} />
+                            <div className="min-w-0">
+                              <span className="text-xs font-semibold text-white block truncate">
+                                {textBgImageData ? (textBgImageName || 'Custom background loaded') : 'Choose a background photo (PNG / JPG / WEBP)'}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block">
+                                Automatically framed to 1080×1920 with your text centered on top.
+                              </span>
+                            </div>
+                          </div>
+                          <span className="px-2.5 py-1 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold shrink-0 whitespace-nowrap">
+                            {textBgImageData ? 'Replace' : 'Browse'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleBgImageUpload}
+                            className="hidden"
+                          />
+                        </label>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            placeholder="https://example.com/background.jpg"
+                            value={textBgImageUrl}
+                            onChange={(e) => {
+                              setTextBgImageUrl(e.target.value);
+                              if (textBgImageName && textBgImageName !== e.target.value.trim()) {
+                                setTextBgImageData('');
+                              }
+                            }}
+                            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500 font-mono"
+                          />
+                          <button
+                            type="button"
+                            disabled={!textBgImageUrl.trim() || isLoadingBgUrl}
+                            onClick={async () => {
+                              try {
+                                await resolveTextBgDataUrl();
+                              } catch (err: any) {
+                                setFeedback({ type: 'error', text: err?.message || 'Unable to load image URL.' });
+                              }
+                            }}
+                            className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white text-[10px] font-bold cursor-pointer whitespace-nowrap shrink-0"
+                          >
+                            {isLoadingBgUrl ? 'Loading...' : 'Preview URL'}
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Dim overlay & text contrast controls */}
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-semibold text-slate-400">Backdrop Dim:</span>
+                          <div className="flex items-center gap-1">
+                            {[
+                              { label: '0%', val: 0 },
+                              { label: '25%', val: 0.25 },
+                              { label: '40%', val: 0.4 },
+                              { label: '65%', val: 0.65 }
+                            ].map((opt) => (
+                              <button
+                                key={opt.val}
+                                type="button"
+                                onClick={() => setTextBgOverlayOpacity(opt.val)}
+                                className={`px-2 py-1 rounded text-[10px] font-mono font-bold cursor-pointer border transition-colors ${
+                                  textBgOverlayOpacity === opt.val
+                                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-slate-400">Text:</span>
+                          <button
+                            type="button"
+                            onClick={() => setTextBgTextColor('#FFFFFF')}
+                            className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer border ${
+                              textBgTextColor === '#FFFFFF'
+                                ? 'bg-white text-slate-950 border-white'
+                                : 'bg-slate-900 border-slate-800 text-slate-400'
+                            }`}
+                          >
+                            White
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTextBgTextColor('#0F172A')}
+                            className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer border ${
+                              textBgTextColor === '#0F172A'
+                                ? 'bg-slate-200 text-slate-950 border-slate-200'
+                                : 'bg-slate-900 border-slate-800 text-slate-400'
+                            }`}
+                          >
+                            Dark
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="text-[10px] text-slate-500 leading-relaxed">
+                        WhatsApp only allows solid colors on plain text stories, so custom background images are rendered into a high-resolution 1080×1920 Status image with your styled text centered on top.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Font dropdown selection */}
                   <div className="space-y-1.5 text-left">
@@ -872,44 +1437,281 @@ export default function StatusBroadcastPage({
               Natively restrict who is authorized to view this status, or tag custom groups of leads.
             </p>
 
-            <div className="grid grid-cols-3 bg-slate-950 p-1 rounded-xl border border-slate-850/60 gap-1 mb-5">
+            <div className="grid grid-cols-2 sm:grid-cols-4 bg-slate-950 p-1 rounded-xl border border-slate-850/60 gap-1 mb-5">
+              <button
+                type="button"
+                onClick={() => setTargetType('phone_contacts')}
+                className={`py-2 px-2 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                  targetType === 'phone_contacts'
+                    ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                    : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                }`}
+              >
+                <BookUser className="w-3.5 h-3.5 shrink-0" />
+                <span className="tabular-nums">Phone Contacts ({phoneContacts.length})</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setTargetType('all_leads')}
-                className={`py-1.5 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                className={`py-2 px-2 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                   targetType === 'all_leads'
                     ? 'bg-slate-850 text-white'
                     : 'text-slate-500 hover:text-slate-350'
                 }`}
               >
-                <Users className="w-3 h-3" />
-                <span>All Leads ({leadsCount})</span>
+                <Users className="w-3.5 h-3.5 shrink-0" />
+                <span className="tabular-nums">All Leads ({leadsCount})</span>
               </button>
               <button
                 type="button"
                 onClick={() => setTargetType('group_members')}
-                className={`py-1.5 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                className={`py-2 px-2 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                   targetType === 'group_members'
                     ? 'bg-slate-850 text-white'
                     : 'text-slate-500 hover:text-slate-350'
                 }`}
               >
-                <Users className="w-3 h-3" />
+                <Users className="w-3.5 h-3.5 shrink-0" />
                 <span>Group JIDs</span>
               </button>
               <button
                 type="button"
                 onClick={() => setTargetType('custom')}
-                className={`py-1.5 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                className={`py-2 px-2 text-[10px] font-bold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
                   targetType === 'custom'
                     ? 'bg-slate-850 text-white'
                     : 'text-slate-500 hover:text-slate-350'
                 }`}
               >
-                <Smartphone className="w-3 h-3" />
+                <Smartphone className="w-3.5 h-3.5 shrink-0" />
                 <span>Manual Numbers</span>
               </button>
             </div>
+
+            {targetType === 'phone_contacts' && (() => {
+              const basePool = savedContactsOnlyFilter
+                ? phoneContacts.filter(c => c.isSavedContact)
+                : phoneContacts;
+              const term = phoneContactSearch.trim().toLowerCase();
+              const filteredContacts = term
+                ? basePool.filter(c =>
+                    (c.name || '').toLowerCase().includes(term) ||
+                    (c.notify || '').toLowerCase().includes(term) ||
+                    (c.phone || c.jid || '').toLowerCase().includes(term)
+                  )
+                : basePool;
+              const selectedCount = getActivePhoneContactJids().length;
+
+              return (
+                <div className="space-y-4 text-left">
+                  {/* Action bar: Sync from Phone & Import .VCF */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-950/60 border border-slate-800 rounded-xl p-3.5">
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-bold text-white block">
+                        Synced Phone &amp; WhatsApp Contacts
+                      </span>
+                      <div className="flex items-center gap-2 text-[11px] text-slate-400 tabular-nums">
+                        <span>{savedPhoneContactsCount} saved in phonebook</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{phoneContacts.length} total synced</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="text-emerald-400 font-semibold">{selectedCount} will see status</span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSyncPhoneContacts}
+                        disabled={isSyncingPhoneContacts}
+                        className="py-2 px-3 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isSyncingPhoneContacts ? 'animate-spin' : ''}`} />
+                        <span>{isSyncingPhoneContacts ? 'Syncing...' : 'Sync from Phone'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowVcfHelper(!showVcfHelper)}
+                        className="py-2 px-3 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 font-bold rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>Import .VCF</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Optional .VCF import panel */}
+                  {showVcfHelper && (
+                    <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <span className="text-xs font-bold text-white block">Import Contacts from Phone (.VCF / vCard)</span>
+                          <p className="text-[11px] text-slate-400">
+                            Export a .vcf file from Google Contacts, Android Contacts, or iPhone and upload it here to merge all saved phone numbers.
+                          </p>
+                        </div>
+                        <label className="py-2 px-3.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>{isImportingVcf ? 'Importing...' : 'Choose .VCF File'}</span>
+                          <input
+                            type="file"
+                            accept=".vcf,.vcard,text/vcard,text/x-vcard"
+                            onChange={handleVcfFileImport}
+                            disabled={isImportingVcf}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-2 pt-1">
+                        <label className="text-[11px] text-slate-400 whitespace-nowrap">Default Country Code (for 10-digit local numbers):</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 91 or 1"
+                          value={defaultCountryCode}
+                          onChange={(e) => setDefaultCountryCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                          className="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white font-mono outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Search & Filter Controls */}
+                  {phoneContacts.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="relative flex-1">
+                          <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            placeholder="Search saved contacts by name or phone number..."
+                            value={phoneContactSearch}
+                            onChange={(e) => setPhoneContactSearch(e.target.value)}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500 font-sans"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setSavedContactsOnlyFilter(!savedContactsOnlyFilter)}
+                            className={`px-3 py-2 rounded-xl text-[10px] font-bold border transition-colors cursor-pointer whitespace-nowrap ${
+                              savedContactsOnlyFilter
+                                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {savedContactsOnlyFilter ? 'Saved Only' : 'All Synced'}
+                          </button>
+                          {excludedPhoneContactJids.length > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => setExcludedPhoneContactJids([])}
+                              className="px-3 py-2 rounded-xl text-[10px] font-bold bg-slate-950 border border-slate-800 text-emerald-400 hover:text-emerald-300 cursor-pointer whitespace-nowrap"
+                            >
+                              Select All
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setExcludedPhoneContactJids(basePool.map(c => c.jid))}
+                              className="px-3 py-2 rounded-xl text-[10px] font-bold bg-slate-950 border border-slate-800 text-slate-400 hover:text-white cursor-pointer whitespace-nowrap"
+                            >
+                              Uncheck All
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="max-h-52 overflow-y-auto border border-slate-800 rounded-xl bg-slate-950/40 divide-y divide-slate-900">
+                        {filteredContacts.length === 0 ? (
+                          <p className="text-[11px] text-slate-500 text-center py-6">
+                            No contacts match your current search/filter.
+                          </p>
+                        ) : (
+                          filteredContacts.slice(0, 250).map((c) => {
+                            const isIncluded = !excludedPhoneContactJids.includes(c.jid);
+                            const displayName = c.name || c.notify || (c.phone ? `+${c.phone}` : c.jid);
+                            return (
+                              <div
+                                key={c.jid}
+                                onClick={() => togglePhoneContactExclusion(c.jid)}
+                                className={`flex items-center justify-between px-3 py-2 cursor-pointer transition-colors ${
+                                  isIncluded ? 'hover:bg-slate-900/60' : 'opacity-50 hover:bg-slate-900/30'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={isIncluded}
+                                    onChange={() => {}}
+                                    className="w-3.5 h-3.5 accent-emerald-500 rounded border-slate-700 cursor-pointer shrink-0"
+                                  />
+                                  <div className="min-w-0">
+                                    <span className="text-xs font-semibold text-white block truncate">{displayName}</span>
+                                    <div className="flex items-center gap-1.5 text-[10px] text-slate-500 font-mono tabular-nums">
+                                      <span>{c.phone ? `+${c.phone}` : c.jid}</span>
+                                      <span aria-hidden="true">·</span>
+                                      <span>{c.source === 'vcf_import' ? 'VCF' : c.isSavedContact ? 'Phonebook' : 'WhatsApp'}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                        {filteredContacts.length > 250 && (
+                          <div className="px-3 py-2 text-[10px] text-slate-500 text-center font-mono">
+                            Showing first 250 of {filteredContacts.length} matching contacts (all selected contacts will receive the status).
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Empty state */}
+                  {!isLoadingPhoneContacts && phoneContacts.length === 0 && (
+                    <div className="bg-slate-950/50 border border-slate-800 rounded-xl p-5 text-center space-y-2.5">
+                      <p className="text-xs font-bold text-white">No phone contacts synced yet</p>
+                      <p className="text-[11px] text-slate-400 max-w-md mx-auto leading-relaxed">
+                        Click <span className="text-emerald-400 font-semibold">Sync from Phone</span> to fetch contacts saved in your linked WhatsApp phone, or upload a <span className="text-white font-semibold">.VCF</span> contact export from your phone.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Optional Leads Hub Merge Toggle */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl border border-slate-800/80 bg-slate-950/60 gap-4">
+                    <div className="space-y-0.5 pr-2">
+                      <span className="text-xs font-bold text-white block">Also include Leads Hub contacts ({leadsCount})</span>
+                      <p className="text-[10px] text-slate-400">
+                        Combine your synced phonebook contacts with leads captured in Leads Hub.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIncludeLeadsWithPhoneContacts(!includeLeadsWithPhoneContacts)}
+                      className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none ${
+                        includeLeadsWithPhoneContacts ? 'bg-emerald-500' : 'bg-slate-700'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          includeLeadsWithPhoneContacts ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Info banner */}
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3.5 text-xs leading-relaxed text-emerald-400/90 flex gap-3">
+                    <Info className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
+                    <div>
+                      <span className="font-bold block text-white text-xs mb-0.5">Visible to Saved Phone Contacts</span>
+                      WhatsApp Status broadcasts require the recipient visibility list (`statusJidList`). All <span className="text-white font-bold tabular-nums">{selectedCount}</span> selected phone contact(s) plus your own WhatsApp account will be included so they can view your Status update.
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {targetType === 'all_leads' && (
               <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 text-left text-xs leading-relaxed text-emerald-400/90 flex gap-3">
@@ -1016,15 +1818,41 @@ export default function StatusBroadcastPage({
                       </button>
                     </div>
 
-                    {/* TAG/MENTION MEMBERS TOGGLE */}
-                    <div className="flex items-center justify-between p-3.5 rounded-xl border border-slate-800/80 bg-slate-950/60 text-left gap-4">
+                    {/* TAG/NOTIFY SELECTED GROUPS IN STATUS TOGGLE */}
+                    <div className="flex items-center justify-between p-3.5 rounded-xl border border-emerald-500/25 bg-emerald-500/5 text-left gap-4">
                       <div className="space-y-0.5 pr-2">
                         <span className="text-xs font-bold text-white block flex items-center gap-1.5">
                           <AtSign className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Silent Tag Group Members</span>
+                          <span>Notify Selected Groups in Chat (Group Status Mention)</span>
+                        </span>
+                        <p className="text-[10px] text-slate-300 leading-relaxed">
+                          Posts WhatsApp's native group mention notification in each selected group chat and adds all {groupMembersList.length} group members to the Status visibility list so they can view it in Status.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTagGroupsInStatus(!tagGroupsInStatus)}
+                        className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none ${
+                          tagGroupsInStatus ? 'bg-emerald-500' : 'bg-slate-700'
+                        }`}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            tagGroupsInStatus ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    {/* TAG/MENTION INDIVIDUAL MEMBERS TOGGLE */}
+                    <div className="flex items-center justify-between p-3.5 rounded-xl border border-slate-800/80 bg-slate-950/60 text-left gap-4">
+                      <div className="space-y-0.5 pr-2">
+                        <span className="text-xs font-bold text-white block flex items-center gap-1.5">
+                          <AtSign className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Also Silent-Tag Individual Members (Optional)</span>
                         </span>
                         <p className="text-[10px] text-slate-400">
-                          Mention all {groupMembersList.length} members directly in the status. They will receive a silent tag notification on their phones.
+                          Sends individual 1-on-1 silent status mention alerts to members in addition to (or instead of) the group notification.
                         </p>
                       </div>
                       <button
@@ -1048,7 +1876,7 @@ export default function StatusBroadcastPage({
                       <div>
                         <span className="font-bold block text-white text-xs mb-0.5">Segmented Distribution Profile</span>
                         You have selected <span className="text-white font-bold">{selectedGroupIds.length} groups</span>. 
-                        Targeting all <span className="text-white font-bold">{groupMembersList.length} unique members</span>. 
+                        Targeting all <span className="text-white font-bold">{groupMembersList.length} unique members</span> (live members &amp; LIDs refreshed automatically on send). 
                         {excludeContacts ? (
                           <span> Contacts from your main Leads Hub list <span className="text-white font-bold">will not</span> receive this update.</span>
                         ) : (
@@ -1091,8 +1919,8 @@ export default function StatusBroadcastPage({
                         <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3 text-[11px] leading-relaxed text-amber-400/90 flex gap-2.5">
                           <AlertCircle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
                           <div>
-                            <span className="font-bold block text-white text-xs mb-0.5">WhatsApp Mention Limit Alert</span>
-                            If you tag all group participants at once, WhatsApp restricts the tag count to 5 members per status. To tag large lists (e.g., 600 - 1000 members), switch to the **Background Batched Queue** to automatically loop status stories with delayed batches.
+                            <span className="font-bold block text-white text-xs mb-0.5">WhatsApp Mention Limit Info</span>
+                            WhatsApp allows up to 5 group/user mentions per status update. If you select more than 5 groups in Instant mode, updates are automatically split into safe batches of 5 — or switch to <strong>Background Batched Queue</strong> for timed spacing between batches.
                           </div>
                         </div>
                       ) : (
@@ -1287,10 +2115,10 @@ export default function StatusBroadcastPage({
               </p>
 
               <div className="space-y-1.5">
-                <label className="text-[10px] font-semibold text-slate-400">Custom Numbers to Tag (comma-separated)</label>
+                <label className="text-[10px] font-semibold text-slate-400">Custom Numbers or Group JIDs to Tag (comma-separated)</label>
                 <input
                   type="text"
-                  placeholder="e.g. 919999999999, 12025550143"
+                  placeholder="e.g. 919999999999, 120363012345678901@g.us"
                   value={mentionsInput}
                   onChange={(e) => setMentionsInput(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-650 outline-none focus:border-emerald-500 transition-colors font-mono"
@@ -1622,9 +2450,33 @@ export default function StatusBroadcastPage({
                 {statusType === 'text' ? (
                   <div 
                     className="absolute inset-0 flex flex-col justify-center items-center text-center p-6 transition-all duration-300"
-                    style={{ backgroundColor: selectedBgHex }}
+                    style={{ backgroundColor: textBgMode === 'image' ? '#0f172a' : selectedBgHex }}
                   >
-                    <p className={`text-white text-base leading-relaxed break-words font-medium select-none max-w-full overflow-hidden text-ellipsis ${getFontClass(selectedFont)}`}>
+                    {textBgMode === 'image' && (textBgImageData || (textBgImageSource === 'url' && textBgImageUrl.trim())) && (
+                      <>
+                        <img
+                          src={textBgImageData || textBgImageUrl.trim()}
+                          alt="Text Status Background"
+                          referrerPolicy="no-referrer"
+                          className="absolute inset-0 w-full h-full object-cover"
+                        />
+                        {textBgOverlayOpacity > 0 && (
+                          <div
+                            className="absolute inset-0 pointer-events-none"
+                            style={{ backgroundColor: `rgba(0, 0, 0, ${textBgOverlayOpacity})` }}
+                          />
+                        )}
+                      </>
+                    )}
+                    <p
+                      className={`relative z-10 text-base leading-relaxed break-words font-medium select-none max-w-full overflow-hidden text-ellipsis whitespace-pre-wrap ${getFontClass(selectedFont)}`}
+                      style={{
+                        color: textBgMode === 'image' ? textBgTextColor : '#FFFFFF',
+                        textShadow: textBgMode === 'image'
+                          ? (textBgTextColor === '#FFFFFF' ? '0 2px 10px rgba(0,0,0,0.7)' : '0 1px 6px rgba(255,255,255,0.55)')
+                          : undefined
+                      }}
+                    >
                       {textContent || 'Write something in the composer to preview your text status update!'}
                     </p>
                   </div>
@@ -1647,15 +2499,22 @@ export default function StatusBroadcastPage({
                         )
                       ) : mediaSource === 'url' && mediaUrl ? (
                         statusType === 'image' ? (
-                          <img 
-                            src={mediaUrl} 
-                            alt="Status Preview Link" 
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              // Fallback on broken URL
-                              e.currentTarget.src = 'https://images.unsplash.com/photo-1579202673506-ca3ce28943ef?q=80&w=290';
-                            }}
-                          />
+                          !previewImgError ? (
+                            <img 
+                              src={mediaUrl} 
+                              alt="Status Preview Link" 
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover"
+                              onError={() => setPreviewImgError(true)}
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center justify-center p-6 text-slate-400 bg-slate-900/90 w-full h-full">
+                              <ImageIcon className="w-10 h-10 mb-2 opacity-60" />
+                              <span className="text-[10px] font-semibold leading-normal">
+                                Preview unavailable for external image URL
+                              </span>
+                            </div>
+                          )
                         ) : (
                           <div className="w-full h-full relative flex flex-col justify-center items-center bg-slate-900">
                             <VideoIcon className="w-12 h-12 text-slate-400" />
