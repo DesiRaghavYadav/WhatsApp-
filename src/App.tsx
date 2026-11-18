@@ -333,6 +333,15 @@ export default function App() {
   const [isSavingSettings, setIsSavingSettings] = useState<boolean>(false);
   const [serverResources, setServerResources] = useState<any>(null);
 
+  // Server Keep-Alive & Background Continuity State
+  const [keepAliveStatus, setKeepAliveStatus] = useState<any>(null);
+  const [keepAliveMode, setKeepAliveMode] = useState<'always' | 'queue_active' | 'off'>('always');
+  const [keepAliveInterval, setKeepAliveInterval] = useState<number>(4);
+  const [keepAliveCustomUrl, setKeepAliveCustomUrl] = useState<string>('');
+  const [isSavingKeepAlive, setIsSavingKeepAlive] = useState<boolean>(false);
+  const [isTestingKeepAlive, setIsTestingKeepAlive] = useState<boolean>(false);
+  const [copiedPingEndpoint, setCopiedPingEndpoint] = useState<boolean>(false);
+
   // Reusable Permanent Saved 4-Digit Codes State
   const [savedCodes, setSavedCodes] = useState<any[]>([]);
   const [saveCodeInput, setSaveCodeInput] = useState<string>('');
@@ -999,6 +1008,78 @@ export default function App() {
       setFeedback({ type: 'error', text: 'Network error saving settings.' });
     } finally {
       setIsSavingSettings(false);
+    }
+  };
+
+  const fetchKeepAliveStatus = async (syncInputs: boolean = false) => {
+    try {
+      const res = await fetchWithAuth('/api/keep-alive/status');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          setKeepAliveStatus(data);
+          if (syncInputs && data.config) {
+            setKeepAliveMode(data.config.mode || 'always');
+            setKeepAliveInterval(data.config.intervalMinutes || 4);
+            setKeepAliveCustomUrl(data.config.customUrl || '');
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching keep-alive status:', e);
+    }
+  };
+
+  const handleSaveKeepAlive = async () => {
+    setIsSavingKeepAlive(true);
+    try {
+      const res = await fetchWithAuth('/api/keep-alive/config', {
+        method: 'POST',
+        body: JSON.stringify({
+          mode: keepAliveMode,
+          intervalMinutes: keepAliveInterval,
+          customUrl: keepAliveCustomUrl.trim()
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        await fetchKeepAliveStatus(true);
+        const pingNote = data.pingResult?.note ? ` — ${data.pingResult.note}` : '';
+        setFeedback({
+          type: data.pingResult?.outcome === 'error' ? 'error' : 'success',
+          text: `Keep-Alive saved${pingNote}`
+        });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Failed to save Keep-Alive settings.' });
+      }
+    } catch (e: any) {
+      setFeedback({ type: 'error', text: 'Error saving Keep-Alive settings.' });
+    } finally {
+      setIsSavingKeepAlive(false);
+    }
+  };
+
+  const handleTestKeepAliveNow = async () => {
+    setIsTestingKeepAlive(true);
+    try {
+      const res = await fetchWithAuth('/api/keep-alive/ping-now', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+      const data = await res.json();
+      await fetchKeepAliveStatus(false);
+      if (res.ok && data.success && data.pingResult) {
+        setFeedback({
+          type: data.pingResult.verifiedContainerReach ? 'success' : 'error',
+          text: data.pingResult.note
+        });
+      } else {
+        setFeedback({ type: 'error', text: data.error || 'Ping test failed.' });
+      }
+    } catch (e: any) {
+      setFeedback({ type: 'error', text: 'Network error running ping test.' });
+    } finally {
+      setIsTestingKeepAlive(false);
     }
   };
 
@@ -2126,6 +2207,7 @@ export default function App() {
     fetchQueue();
     fetchPausedSessions();
     fetchCapturedGroupInvites();
+    fetchKeepAliveStatus(true);
     if (currentView === 'analytics') {
       fetchAnalytics();
     }
@@ -2141,6 +2223,9 @@ export default function App() {
       }
       if (currentView === 'settings' || currentView === 'group-invites') {
         fetchCapturedGroupInvites();
+      }
+      if (currentView === 'settings' || currentView === 'queue-manager') {
+        fetchKeepAliveStatus(false);
       }
       
       const primaryConnected = sessionsListRef.current.find(s => s.id === 'primary')?.status === 'connected';
@@ -6027,6 +6112,8 @@ export default function App() {
             handleQueueReorder={handleQueueReorder}
             globalDelaySecondsState={globalDelaySecondsState}
             handleClearQueue={handleClearQueue}
+            keepAliveStatus={keepAliveStatus}
+            onOpenKeepAliveSettings={() => setCurrentView('settings')}
           />
         ) : currentView === 'settings' ? (
           <div className="space-y-8 animate-fadeIn">
@@ -6661,6 +6748,217 @@ export default function App() {
                       })
                     )}
                   </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Server Keep-Alive & Background Queue Continuity Panel */}
+            <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden mt-6">
+              <div className="absolute top-0 left-0 w-1.5 h-full bg-emerald-500" />
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 mb-5 border-b border-slate-850">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider">
+                    <Zap className="w-4 h-4 text-emerald-400" />
+                    <span>Server Keep-Alive & Background Queue Continuity</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed max-w-3xl">
+                    Your message queues run on the Node.js server (not inside Chrome), so closing your browser tab does not stop sending.
+                    Free serverless hosts (Cloud Run / Render) sleep after ~15 minutes without incoming HTTPS requests—configure automatic self-pings or copy the public ping URL for an external cron monitor.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleTestKeepAliveNow}
+                    disabled={isTestingKeepAlive}
+                    className="px-3.5 py-2 bg-slate-950 hover:bg-slate-900 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isTestingKeepAlive ? 'animate-spin' : ''}`} />
+                    <span>{isTestingKeepAlive ? 'Pinging...' : 'Ping Now'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveKeepAlive}
+                    disabled={isSavingKeepAlive}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-slate-950 rounded-xl text-xs font-bold transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {isSavingKeepAlive ? 'Saving...' : 'Save Keep-Alive'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left: Controls */}
+                <div className="lg:col-span-7 space-y-4">
+                  {/* Mode Selector */}
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-2">Keep-Alive Mode</label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      {[
+                        { id: 'always' as const, label: 'Always Alive (24/7)', desc: 'Keeps WhatsApp bots & queues awake continuously' },
+                        { id: 'queue_active' as const, label: 'While Queue Runs', desc: 'Auto-pings only while queue/schedules are pending' },
+                        { id: 'off' as const, label: 'Disabled', desc: 'No automatic server self-pings' }
+                      ].map(opt => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setKeepAliveMode(opt.id)}
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            keepAliveMode === opt.id
+                              ? 'bg-emerald-500/15 border-emerald-500/50 text-white'
+                              : 'bg-slate-950/80 border-slate-800 text-slate-400 hover:border-slate-700'
+                          }`}
+                        >
+                          <span className="text-xs font-bold block">{opt.label}</span>
+                          <span className="text-[10px] text-slate-400 block mt-0.5 leading-snug">{opt.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Interval & Public Target URL */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-slate-300 block mb-1">Ping Interval</label>
+                      <select
+                        value={keepAliveInterval}
+                        onChange={(e) => setKeepAliveInterval(Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 cursor-pointer"
+                      >
+                        <option value={1}>Every 1 Minute</option>
+                        <option value={2}>Every 2 Minutes</option>
+                        <option value={4}>Every 4 Minutes (Recommended)</option>
+                        <option value={5}>Every 5 Minutes</option>
+                        <option value={10}>Every 10 Minutes</option>
+                      </select>
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="text-[11px] font-semibold text-slate-300 block mb-1">
+                        Hosted App URL (Auto-detected or Custom Shared URL)
+                      </label>
+                      <input
+                        type="url"
+                        placeholder={keepAliveStatus?.config?.detectedPublicUrl || 'https://your-hosted-app.run.app'}
+                        value={keepAliveCustomUrl}
+                        onChange={(e) => setKeepAliveCustomUrl(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 font-mono outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* External Monitor Endpoint Copy Bar */}
+                  <div className="bg-slate-950/90 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                        Public Health / Cron Endpoint (for UptimeRobot / cron-job.org)
+                      </span>
+                      <code className="text-[11px] text-emerald-400 font-mono truncate block mt-0.5">
+                        {keepAliveStatus?.pingEndpoint || '/api/public/ping'}
+                      </code>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = keepAliveStatus?.pingEndpoint || `${window.location.origin}/api/public/ping`;
+                        navigator.clipboard.writeText(url);
+                        setCopiedPingEndpoint(true);
+                        setTimeout(() => setCopiedPingEndpoint(false), 2000);
+                        setFeedback({ type: 'success', text: 'Copied keep-alive ping URL to clipboard!' });
+                      }}
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 shrink-0 cursor-pointer whitespace-nowrap"
+                    >
+                      {copiedPingEndpoint ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedPingEndpoint ? 'Copied!' : 'Copy Ping URL'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Right: Live Verification Telemetry */}
+                <div className="lg:col-span-5 bg-slate-950/80 border border-slate-800 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                      <Activity className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Live Ping Verification</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500">
+                      Instance: {keepAliveStatus?.instanceId || 'booting'}
+                    </span>
+                  </div>
+
+                  {/* Verification Result Box */}
+                  {keepAliveStatus?.runtime?.lastRecord ? (
+                    <div className={`p-3 rounded-xl border text-[11px] leading-relaxed ${
+                      keepAliveStatus.runtime.lastRecord.verifiedContainerReach
+                        ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-200'
+                        : keepAliveStatus.runtime.lastRecord.outcome === 'auth_blocked'
+                        ? 'bg-amber-950/30 border-amber-500/30 text-amber-200'
+                        : 'bg-slate-900 border-slate-700 text-slate-300'
+                    }`}>
+                      <div className="flex items-start gap-2">
+                        {keepAliveStatus.runtime.lastRecord.verifiedContainerReach ? (
+                          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        )}
+                        <span>{keepAliveStatus.runtime.lastRecord.note}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-xl border border-slate-800 bg-slate-900/60 text-[11px] text-slate-400">
+                      Click <strong>Ping Now</strong> to verify whether unauthenticated HTTP requests reach this container directly or encounter a hosting auth proxy.
+                    </div>
+                  )}
+
+                  {/* Quick Counters */}
+                  <div className="grid grid-cols-3 gap-2 pt-1 text-center font-mono">
+                    <div className="bg-slate-900/80 border border-slate-850 rounded-lg p-2">
+                      <span className="text-[9px] text-slate-500 block uppercase">Pending Queue</span>
+                      <span className="text-sm font-bold text-white">
+                        {(keepAliveStatus?.activity?.pendingQueueItems || 0) + (keepAliveStatus?.activity?.sendingQueueItems || 0)}
+                      </span>
+                    </div>
+                    <div className="bg-slate-900/80 border border-slate-850 rounded-lg p-2">
+                      <span className="text-[9px] text-slate-500 block uppercase">WA Active</span>
+                      <span className="text-sm font-bold text-emerald-400">
+                        {keepAliveStatus?.activity?.connectedSessions || 0}
+                      </span>
+                    </div>
+                    <div className="bg-slate-900/80 border border-slate-850 rounded-lg p-2">
+                      <span className="text-[9px] text-slate-500 block uppercase">Verified Pings</span>
+                      <span className="text-sm font-bold text-sky-400">
+                        {keepAliveStatus?.runtime?.totalVerifiedPings || 0}/{keepAliveStatus?.runtime?.totalPings || 0}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Recent Pings */}
+                  {Array.isArray(keepAliveStatus?.runtime?.recentPings) && keepAliveStatus.runtime.recentPings.length > 0 && (
+                    <div className="pt-2 border-t border-slate-850 space-y-1.5">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase block">Recent Checks</span>
+                      <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                        {keepAliveStatus.runtime.recentPings.slice(0, 4).map((p: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between text-[10px] font-mono text-slate-400 bg-slate-900/60 px-2 py-1 rounded">
+                            <span className="truncate max-w-[140px]">
+                              {new Date(p.timestamp).toLocaleTimeString()}
+                            </span>
+                            <span className={
+                              p.verifiedContainerReach
+                                ? 'text-emerald-400 font-bold'
+                                : p.outcome === 'auth_blocked'
+                                ? 'text-amber-400 font-bold'
+                                : 'text-rose-400 font-bold'
+                            }>
+                              {p.statusCode ? `HTTP ${p.statusCode}` : 'ERR'} ({p.latencyMs}ms)
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

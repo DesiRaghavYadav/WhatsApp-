@@ -6893,6 +6893,293 @@ async function checkAndProcessAllUserQueues() {
 // Run queue checker every 10 seconds
 setInterval(checkAndProcessAllUserQueues, 10000);
 
+// ================= SERVER KEEP-ALIVE ENGINE =================
+type KeepAliveMode = 'always' | 'queue_active' | 'off';
+
+interface KeepAliveConfig {
+  mode: KeepAliveMode;
+  intervalMinutes: number;
+  customUrl?: string;
+  detectedPublicUrl?: string;
+  updatedAt?: string;
+}
+
+interface KeepAlivePingRecord {
+  timestamp: string;
+  targetUrl: string;
+  statusCode: number | null;
+  latencyMs: number;
+  verifiedContainerReach: boolean;
+  outcome: 'ok' | 'auth_blocked' | 'error' | 'skipped';
+  note: string;
+}
+
+const INSTANCE_ID = Math.random().toString(36).substring(2, 10);
+const keepAliveConfigPath = path.join(DATA_DIR, 'keepalive.json');
+
+const keepAliveRuntime = {
+  lastPingAt: 0,
+  isPinging: false,
+  totalPings: 0,
+  totalVerifiedPings: 0,
+  consecutiveFailures: 0,
+  lastRecord: null as KeepAlivePingRecord | null,
+  recentPings: [] as KeepAlivePingRecord[]
+};
+
+function sanitizeKeepAliveBaseUrl(rawUrl?: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^/\s]+/i.test(trimmed)) return '';
+  try {
+    const parsed = new URL(trimmed);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return '';
+  }
+}
+
+function loadKeepAliveConfig(): KeepAliveConfig {
+  const envUrl = sanitizeKeepAliveBaseUrl(
+    process.env.APP_URL || process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ''
+  );
+  try {
+    if (fs.existsSync(keepAliveConfigPath)) {
+      const parsed = JSON.parse(fs.readFileSync(keepAliveConfigPath, 'utf8'));
+      const mode: KeepAliveMode = (parsed.mode === 'always' || parsed.mode === 'queue_active' || parsed.mode === 'off')
+        ? parsed.mode
+        : 'always';
+      const intervalMinutes = typeof parsed.intervalMinutes === 'number' && parsed.intervalMinutes >= 1 && parsed.intervalMinutes <= 15
+        ? Math.round(parsed.intervalMinutes)
+        : 4;
+      return {
+        mode,
+        intervalMinutes,
+        customUrl: sanitizeKeepAliveBaseUrl(parsed.customUrl) || undefined,
+        detectedPublicUrl: sanitizeKeepAliveBaseUrl(parsed.detectedPublicUrl) || envUrl || undefined,
+        updatedAt: parsed.updatedAt
+      };
+    }
+  } catch {}
+  return {
+    mode: 'always',
+    intervalMinutes: 4,
+    detectedPublicUrl: envUrl || undefined
+  };
+}
+
+function saveKeepAliveConfig(partial: Partial<KeepAliveConfig>): KeepAliveConfig {
+  const current = loadKeepAliveConfig();
+  const nextMode: KeepAliveMode = (partial.mode === 'always' || partial.mode === 'queue_active' || partial.mode === 'off')
+    ? partial.mode
+    : current.mode;
+  const nextInterval = typeof partial.intervalMinutes === 'number' && partial.intervalMinutes >= 1 && partial.intervalMinutes <= 15
+    ? Math.round(partial.intervalMinutes)
+    : current.intervalMinutes;
+  const nextCustomUrl = partial.customUrl !== undefined
+    ? (sanitizeKeepAliveBaseUrl(partial.customUrl) || undefined)
+    : current.customUrl;
+  const nextDetectedUrl = partial.detectedPublicUrl !== undefined
+    ? (sanitizeKeepAliveBaseUrl(partial.detectedPublicUrl) || undefined)
+    : current.detectedPublicUrl;
+
+  const updated: KeepAliveConfig = {
+    mode: nextMode,
+    intervalMinutes: nextInterval,
+    customUrl: nextCustomUrl,
+    detectedPublicUrl: nextDetectedUrl,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    fs.writeFileSync(keepAliveConfigPath, JSON.stringify(updated, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[KEEP-ALIVE] Failed to save config:', err);
+  }
+  return updated;
+}
+
+function getQueueAndSessionActivityStats(): {
+  pendingQueueItems: number;
+  sendingQueueItems: number;
+  activeStatusSchedules: number;
+  connectedSessions: number;
+} {
+  let pendingQueueItems = 0;
+  let sendingQueueItems = 0;
+  let activeStatusSchedules = 0;
+  let connectedSessions = 0;
+
+  try {
+    for (const [, sess] of sessions.entries()) {
+      if (sess?.status === 'connected') connectedSessions++;
+    }
+  } catch {}
+
+  try {
+    const users = loadUsers();
+    for (const u of users) {
+      const q = loadUserQueue(u.username);
+      for (const item of q) {
+        if (item.status === 'pending') pendingQueueItems++;
+        else if (item.status === 'sending') sendingQueueItems++;
+      }
+      try {
+        const schedulesPath = path.join(getUserDir(u.username), 'status_schedules.json');
+        if (fs.existsSync(schedulesPath)) {
+          const scheds = JSON.parse(fs.readFileSync(schedulesPath, 'utf8'));
+          if (Array.isArray(scheds)) {
+            for (const s of scheds) {
+              if (s.status === 'pending' || s.status === 'running' || s.status === 'active') {
+                activeStatusSchedules++;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return { pendingQueueItems, sendingQueueItems, activeStatusSchedules, connectedSessions };
+}
+
+function getEffectiveKeepAliveBaseUrl(cfg: KeepAliveConfig): string {
+  return (
+    cfg.customUrl ||
+    cfg.detectedPublicUrl ||
+    sanitizeKeepAliveBaseUrl(process.env.APP_URL || process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '')
+  );
+}
+
+async function executeKeepAlivePing(reason: 'scheduled' | 'manual' = 'scheduled'): Promise<KeepAlivePingRecord> {
+  const cfg = loadKeepAliveConfig();
+  const baseUrl = getEffectiveKeepAliveBaseUrl(cfg);
+  const startedAt = Date.now();
+
+  if (!baseUrl) {
+    const rec: KeepAlivePingRecord = {
+      timestamp: new Date().toISOString(),
+      targetUrl: '',
+      statusCode: null,
+      latencyMs: 0,
+      verifiedContainerReach: false,
+      outcome: 'skipped',
+      note: 'No public HTTPS host URL detected yet. Open Settings from your hosted URL or enter your Shared App URL.'
+    };
+    keepAliveRuntime.lastRecord = rec;
+    return rec;
+  }
+
+  const targetUrl = `${baseUrl}/api/public/ping?source=keepalive&reason=${reason}&ts=${startedAt}`;
+  keepAliveRuntime.isPinging = true;
+  keepAliveRuntime.lastPingAt = startedAt;
+  keepAliveRuntime.totalPings++;
+
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        'User-Agent': 'WA-Bridge-KeepAlive/1.0',
+        'Cache-Control': 'no-cache'
+      }
+    });
+    const latencyMs = Date.now() - startedAt;
+
+    if (res.status === 200) {
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {}
+
+      if (body && body.service === 'wa-bridge-keepalive') {
+        keepAliveRuntime.totalVerifiedPings++;
+        keepAliveRuntime.consecutiveFailures = 0;
+        const rec: KeepAlivePingRecord = {
+          timestamp: new Date().toISOString(),
+          targetUrl,
+          statusCode: 200,
+          latencyMs,
+          verifiedContainerReach: true,
+          outcome: 'ok',
+          note: `Verified HTTP 200 reached this server container directly (${latencyMs}ms).`
+        };
+        keepAliveRuntime.lastRecord = rec;
+        keepAliveRuntime.recentPings = [rec, ...keepAliveRuntime.recentPings].slice(0, 10);
+        return rec;
+      }
+    }
+
+    if (res.status >= 300 && res.status < 400 || res.status === 401 || res.status === 403) {
+      keepAliveRuntime.consecutiveFailures++;
+      const location = res.headers.get('location') || '';
+      const rec: KeepAlivePingRecord = {
+        timestamp: new Date().toISOString(),
+        targetUrl,
+        statusCode: res.status,
+        latencyMs,
+        verifiedContainerReach: false,
+        outcome: 'auth_blocked',
+        note: `Gateway returned HTTP ${res.status}${location ? ' (auth redirect)' : ''}. Private AI Studio auth proxy blocks unauthenticated self-pings; a public non-auth Shared/Cloud Run URL or active open session is needed to reach /api/public/ping directly.`
+      };
+      keepAliveRuntime.lastRecord = rec;
+      keepAliveRuntime.recentPings = [rec, ...keepAliveRuntime.recentPings].slice(0, 10);
+      return rec;
+    }
+
+    keepAliveRuntime.consecutiveFailures++;
+    const rec: KeepAlivePingRecord = {
+      timestamp: new Date().toISOString(),
+      targetUrl,
+      statusCode: res.status,
+      latencyMs,
+      verifiedContainerReach: false,
+      outcome: 'error',
+      note: `Unexpected HTTP ${res.status} response (${latencyMs}ms).`
+    };
+    keepAliveRuntime.lastRecord = rec;
+    keepAliveRuntime.recentPings = [rec, ...keepAliveRuntime.recentPings].slice(0, 10);
+    return rec;
+  } catch (err: any) {
+    keepAliveRuntime.consecutiveFailures++;
+    const latencyMs = Date.now() - startedAt;
+    const rec: KeepAlivePingRecord = {
+      timestamp: new Date().toISOString(),
+      targetUrl,
+      statusCode: null,
+      latencyMs,
+      verifiedContainerReach: false,
+      outcome: 'error',
+      note: `Network error reaching public URL: ${err?.message || 'Request failed'}`
+    };
+    keepAliveRuntime.lastRecord = rec;
+    keepAliveRuntime.recentPings = [rec, ...keepAliveRuntime.recentPings].slice(0, 10);
+    return rec;
+  } finally {
+    keepAliveRuntime.isPinging = false;
+  }
+}
+
+async function runKeepAliveScheduler() {
+  if (keepAliveRuntime.isPinging) return;
+  const cfg = loadKeepAliveConfig();
+  if (cfg.mode === 'off') return;
+
+  if (cfg.mode === 'queue_active') {
+    const stats = getQueueAndSessionActivityStats();
+    const hasActiveWork = stats.pendingQueueItems > 0 || stats.sendingQueueItems > 0 || stats.activeStatusSchedules > 0;
+    if (!hasActiveWork) return;
+  }
+
+  const intervalMs = Math.max(1, cfg.intervalMinutes || 4) * 60 * 1000;
+  if (Date.now() - keepAliveRuntime.lastPingAt < intervalMs) {
+    return;
+  }
+
+  await executeKeepAlivePing('scheduled');
+}
+
 function requireAuth(req: any, res: any, next: any) {
   const authHeader = req.headers.authorization;
   const token = authHeader 
@@ -6925,6 +7212,29 @@ async function startServer() {
 
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+  // Auto-detect public hosted URL from incoming reverse-proxy headers (Cloud Run / Render / custom domain)
+  app.use((req, _res, next) => {
+    try {
+      const forwardedHost = (req.headers['x-forwarded-host'] as string || '').split(',')[0].trim();
+      const rawHost = forwardedHost || (req.headers.host || '').trim();
+      if (
+        rawHost &&
+        !/^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$/i.test(rawHost) &&
+        !rawHost.startsWith('10.') &&
+        !rawHost.startsWith('192.168.')
+      ) {
+        const protoHeader = (req.headers['x-forwarded-proto'] as string || '').split(',')[0].trim();
+        const proto = protoHeader === 'http' || protoHeader === 'https' ? protoHeader : 'https';
+        const candidateUrl = `${proto}://${rawHost}`;
+        const existingCfg = loadKeepAliveConfig();
+        if (existingCfg.detectedPublicUrl !== candidateUrl) {
+          saveKeepAliveConfig({ detectedPublicUrl: candidateUrl });
+        }
+      }
+    } catch {}
+    next();
+  });
 
   // Restore all files from Firestore before starting server routes & connects
   try {
@@ -6981,6 +7291,89 @@ function getFirestoreStatusPayload() {
     timestamp: new Date().toISOString()
   };
 }
+
+  // Ultra-lightweight public Keep-Alive & Health endpoints (used by external cron monitors & self-ping)
+  app.get(['/api/public/ping', '/healthz'], (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const stats = getQueueAndSessionActivityStats();
+    res.json({
+      ok: true,
+      alive: true,
+      service: 'wa-bridge-keepalive',
+      instanceId: INSTANCE_ID,
+      uptimeSeconds: Math.floor((Date.now() - serverStartTime) / 1000),
+      activeSessions: stats.connectedSessions,
+      pendingQueueItems: stats.pendingQueueItems + stats.sendingQueueItems,
+      activeStatusSchedules: stats.activeStatusSchedules,
+      timestamp: new Date().toISOString()
+    });
+  });
+
+  // Authenticated Keep-Alive configuration & diagnostics APIs
+  app.get('/api/keep-alive/status', requireAuth, (_req: any, res) => {
+    const config = loadKeepAliveConfig();
+    const activity = getQueueAndSessionActivityStats();
+    const effectiveUrl = getEffectiveKeepAliveBaseUrl(config);
+    res.json({
+      success: true,
+      config,
+      effectiveUrl,
+      pingEndpoint: effectiveUrl ? `${effectiveUrl}/api/public/ping` : '/api/public/ping',
+      instanceId: INSTANCE_ID,
+      uptimeSeconds: Math.floor((Date.now() - serverStartTime) / 1000),
+      activity,
+      runtime: {
+        isPinging: keepAliveRuntime.isPinging,
+        lastPingAt: keepAliveRuntime.lastPingAt ? new Date(keepAliveRuntime.lastPingAt).toISOString() : null,
+        totalPings: keepAliveRuntime.totalPings,
+        totalVerifiedPings: keepAliveRuntime.totalVerifiedPings,
+        consecutiveFailures: keepAliveRuntime.consecutiveFailures,
+        lastRecord: keepAliveRuntime.lastRecord,
+        recentPings: keepAliveRuntime.recentPings
+      }
+    });
+  });
+
+  app.post('/api/keep-alive/config', requireAuth, async (req: any, res) => {
+    const { mode, intervalMinutes, customUrl } = req.body || {};
+    if (mode !== undefined && !['always', 'queue_active', 'off'].includes(mode)) {
+      return res.status(400).json({ success: false, error: 'Invalid mode. Use always, queue_active, or off.' });
+    }
+    if (customUrl !== undefined && customUrl !== '' && !sanitizeKeepAliveBaseUrl(customUrl)) {
+      return res.status(400).json({ success: false, error: 'Custom URL must start with http:// or https:// (e.g. https://your-app.run.app).' });
+    }
+    const updated = saveKeepAliveConfig({
+      mode,
+      intervalMinutes: intervalMinutes !== undefined ? Number(intervalMinutes) : undefined,
+      customUrl
+    });
+    addLog(req.username, `⚡ Keep-Alive updated: Mode=${updated.mode.toUpperCase()}, Interval=${updated.intervalMinutes}m, Target=${getEffectiveKeepAliveBaseUrl(updated) || 'Auto-detect pending'}`, 'info');
+    let pingResult: KeepAlivePingRecord | null = null;
+    if (updated.mode !== 'off' && getEffectiveKeepAliveBaseUrl(updated)) {
+      pingResult = await executeKeepAlivePing('manual');
+    }
+    res.json({
+      success: true,
+      config: updated,
+      effectiveUrl: getEffectiveKeepAliveBaseUrl(updated),
+      pingResult,
+      message: 'Keep-Alive settings saved!'
+    });
+  });
+
+  app.post('/api/keep-alive/ping-now', requireAuth, async (_req: any, res) => {
+    const record = await executeKeepAlivePing('manual');
+    res.json({
+      success: true,
+      pingResult: record,
+      runtime: {
+        totalPings: keepAliveRuntime.totalPings,
+        totalVerifiedPings: keepAliveRuntime.totalVerifiedPings,
+        consecutiveFailures: keepAliveRuntime.consecutiveFailures,
+        recentPings: keepAliveRuntime.recentPings
+      }
+    });
+  });
 
   // Public Firestore status endpoint
   app.get('/api/public/firestore-status', (req, res) => {
@@ -10311,6 +10704,10 @@ setInterval(runSystemHealthMonitor, 5 * 60 * 1000);
 // Run group auto-retry worker every 3 minutes
 setTimeout(runGroupAutoRetryWorker, 15000);
 setInterval(runGroupAutoRetryWorker, 3 * 60 * 1000);
+
+// Run Keep-Alive scheduler check every 30 seconds (pings according to configured intervalMinutes)
+setTimeout(() => { runKeepAliveScheduler().catch(() => {}); }, 20000);
+setInterval(() => { runKeepAliveScheduler().catch(() => {}); }, 30 * 1000);
 
 startServer().catch((err) => {
   console.error('Fatal: Server startup failed:', err);

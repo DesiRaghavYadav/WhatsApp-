@@ -26,6 +26,8 @@ interface QueueManagerPageProps {
   handleQueueReorder: (itemId: string, action: 'up' | 'down' | 'top' | 'delete') => Promise<void>;
   globalDelaySecondsState: number;
   handleClearQueue?: (type?: 'pending' | 'history' | 'all') => Promise<void>;
+  keepAliveStatus?: any;
+  onOpenKeepAliveSettings?: () => void;
 }
 
 export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
@@ -35,12 +37,18 @@ export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
   handleTogglePauseSession,
   handleQueueReorder,
   globalDelaySecondsState,
-  handleClearQueue
+  handleClearQueue,
+  keepAliveStatus,
+  onOpenKeepAliveSettings
 }) => {
   // Filter queue items by status
   const pendingItems = queueItems.filter(item => item.status === 'pending');
   const activeItems = queueItems.filter(item => item.status === 'sending');
   const pastItems = queueItems.filter(item => item.status === 'completed' || item.status === 'sent' || item.status === 'failed');
+
+  const keepAliveMode = keepAliveStatus?.config?.mode || 'always';
+  const keepAliveInterval = keepAliveStatus?.config?.intervalMinutes || 4;
+  const lastOutcome = keepAliveStatus?.runtime?.lastRecord?.outcome;
 
   return (
     <div className="space-y-8 animate-fadeIn">
@@ -56,6 +64,37 @@ export const QueueManagerPage: React.FC<QueueManagerPageProps> = ({
             Independently control, pause, or resume WhatsApp session queues to prevent account overlaps and re-order scheduled tasks.
           </p>
         </div>
+        {onOpenKeepAliveSettings && (
+          <button
+            type="button"
+            onClick={onOpenKeepAliveSettings}
+            className="px-3.5 py-2 bg-slate-950 hover:bg-slate-900 border border-slate-700 text-slate-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+          >
+            <Zap className={`w-3.5 h-3.5 ${keepAliveMode === 'off' ? 'text-slate-500' : lastOutcome === 'auth_blocked' ? 'text-amber-400' : 'text-emerald-400'}`} />
+            <span>
+              Keep-Alive: {keepAliveMode === 'always' ? `24/7 (${keepAliveInterval}m)` : keepAliveMode === 'queue_active' ? `While Queue Runs (${keepAliveInterval}m)` : 'Off'}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* Background Execution Notice */}
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div className="flex items-start sm:items-center gap-2.5 text-slate-300">
+          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5 sm:mt-0" />
+          <span>
+            <strong className="text-white">Server-Side Queue Execution:</strong> Queued messages run on the backend server, not in Chrome—closing this tab will not cancel active sends while the host container stays awake.
+          </span>
+        </div>
+        {onOpenKeepAliveSettings && (
+          <button
+            type="button"
+            onClick={onOpenKeepAliveSettings}
+            className="text-emerald-400 hover:text-emerald-300 font-bold underline text-[11px] shrink-0 self-start sm:self-center cursor-pointer whitespace-nowrap"
+          >
+            Configure Keep-Alive →
+          </button>
+        )}
       </div>
 
       {/* 2. Account Queues Controller (Grid) */}
