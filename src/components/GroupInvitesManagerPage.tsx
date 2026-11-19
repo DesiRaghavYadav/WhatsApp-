@@ -189,12 +189,18 @@ export default function GroupInvitesManagerPage({
       const res = await fetch('/api/captured-group-invites', {
         headers: { Authorization: `Bearer ${token}` }
       });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success && Array.isArray(data.invites)) {
-        setInvites(data.invites);
+        const seen = new Map<string, CapturedGroupInvite>();
+        for (const inv of data.invites) {
+          const key = (inv.code || inv.url || '').trim();
+          if (key) seen.set(key, inv);
+        }
+        setInvites(Array.from(seen.values()));
       }
     } catch (err: any) {
-      console.error('Failed to load group invites:', err);
+      console.warn('Temporary network issue loading group invites:', err?.message || err);
     } finally {
       setIsLoading(false);
     }
@@ -206,6 +212,7 @@ export default function GroupInvitesManagerPage({
       const res = await fetch('/api/settings', {
         headers: { Authorization: `Bearer ${token}` }
       });
+      if (!res.ok) return;
       const data = await res.json();
       if (data.success && data.settings) {
         setAutoJoinEnabled(!!data.settings.autoJoinGroupsEnabled);
@@ -214,7 +221,7 @@ export default function GroupInvitesManagerPage({
         setSettingsLoaded(true);
       }
     } catch (err: any) {
-      console.error('Failed to load settings:', err);
+      console.warn('Temporary network issue loading group invite settings:', err?.message || err);
     }
   };
 
@@ -898,7 +905,7 @@ export default function GroupInvitesManagerPage({
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredInvites.slice().reverse().map((invite) => {
+            {filteredInvites.slice().reverse().map((invite, idx) => {
               const isJoined = invite.status === 'joined';
               const isRemoved = invite.status === 'removed';
               const isRequested = invite.status === 'requested';
@@ -908,7 +915,7 @@ export default function GroupInvitesManagerPage({
 
               return (
                 <div
-                  key={invite.code}
+                  key={`${invite.code || invite.url || 'invite'}-${idx}`}
                   className={`border rounded-2xl p-5 text-left relative overflow-hidden transition-all flex flex-col justify-between ${
                     isSelected ? 'ring-2 ring-emerald-500/70 ' : ''
                   }${

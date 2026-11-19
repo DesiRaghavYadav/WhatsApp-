@@ -368,7 +368,7 @@ export default function App() {
   });
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState<boolean>(false);
 
-  // Authenticated fetch wrapper
+  // Authenticated fetch wrapper with automatic single retry on transient network drops
   const fetchWithAuth = async (url: string, options: any = {}) => {
     const activeToken = token || localStorage.getItem('wa_auth_token');
     const headers = {
@@ -376,14 +376,30 @@ export default function App() {
       ...options.headers,
       ...(activeToken ? { 'Authorization': `Bearer ${activeToken}` } : {})
     };
-    const res = await fetch(url, { ...options, headers });
-    if (res.status === 401) {
-      localStorage.removeItem('wa_auth_token');
-      localStorage.removeItem('wa_username');
-      setToken(null);
-      setUsername(null);
+    const method = (options.method || 'GET').toUpperCase();
+    const maxAttempts = method === 'GET' ? 2 : 1;
+
+    let lastErr: any;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const res = await fetch(url, { ...options, headers });
+        setServerOnline(true);
+        if (res.status === 401) {
+          localStorage.removeItem('wa_auth_token');
+          localStorage.removeItem('wa_username');
+          setToken(null);
+          setUsername(null);
+        }
+        return res;
+      } catch (err) {
+        lastErr = err;
+        setServerOnline(false);
+        if (attempt + 1 < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 700));
+        }
+      }
     }
-    return res;
+    throw lastErr;
   };
   
   // Workflows Automation State
@@ -1026,7 +1042,8 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.error('Error fetching keep-alive status:', e);
+      setServerOnline(false);
+      console.warn('Backend server connectivity issue while fetching keep-alive status (retrying...)');
     }
   };
 
@@ -1183,11 +1200,17 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.invites)) {
-          setCapturedGroupInvites(data.invites);
+          const dedupedMap = new Map<string, any>();
+          for (const inv of data.invites) {
+            const k = (inv?.code || inv?.url || '').trim();
+            if (k) dedupedMap.set(k, inv);
+          }
+          setCapturedGroupInvites(Array.from(dedupedMap.values()));
         }
       }
     } catch (e) {
-      console.error('Error fetching captured group invites:', e);
+      setServerOnline(false);
+      console.warn('Backend server connectivity issue while fetching captured group invites (retrying...)');
     } finally {
       setIsLoadingCapturedGroups(false);
     }
@@ -1522,7 +1545,8 @@ export default function App() {
           }
         }
       } catch (e) {
-        console.error('Error fetching server resources:', e);
+        setServerOnline(false);
+        console.warn('Backend server connectivity issue while fetching server resources (retrying...)');
       }
     };
 
@@ -1835,7 +1859,8 @@ export default function App() {
         }
       }
     } catch (e) {
-      console.error('Error fetching paused sessions:', e);
+      setServerOnline(false);
+      console.warn('Backend server connectivity issue while fetching paused sessions (retrying...)');
     }
   };
 
@@ -2391,10 +2416,20 @@ export default function App() {
             scheduledAt: scheduledAt || undefined
           };
 
-      const res = await fetchWithAuth(endpoint, {
-        method: 'POST',
-        body: JSON.stringify(bodyPayload),
-      });
+      let res: Response;
+      try {
+        res = await fetchWithAuth(endpoint, {
+          method: 'POST',
+          body: JSON.stringify(bodyPayload),
+        });
+      } catch (networkErr: any) {
+        // Retry once if the server was mid-restart / briefly unreachable before accepting the request
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        res = await fetchWithAuth(endpoint, {
+          method: 'POST',
+          body: JSON.stringify(bodyPayload),
+        });
+      }
 
       const data = await res.json();
       if (res.ok && data.success) {
@@ -2417,10 +2452,11 @@ export default function App() {
         setFeedback({ type: 'error', text: data.error || 'Failed to send message.' });
       }
     } catch (err: any) {
-      console.error('Error sending message:', err);
+      setServerOnline(false);
+      console.warn('Temporary network issue sending message:', err?.message || err);
       setFeedback({ 
         type: 'error', 
-        text: err?.message ? `Network error sending message: ${err.message}` : 'Network error. Could not connect to the API server.' 
+        text: 'Could not reach the backend server right now (it may be restarting). Please try sending again in a moment.' 
       });
     } finally {
       setIsSending(false);
@@ -6652,7 +6688,7 @@ export default function App() {
 
                         return (
                           <div
-                            key={itemKey}
+                            key={`${itemKey}-${idx}`}
                             className={`bg-slate-950 border rounded-xl p-4 text-left relative overflow-hidden transition-all ${
                               isSelected ? 'border-emerald-500/70 ring-1 ring-emerald-500/50' : 'border-slate-850 hover:border-slate-750'
                             }`}

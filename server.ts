@@ -811,13 +811,87 @@ interface CapturedGroupInvite {
   joinApprovalMode?: boolean;
 }
 
+function dedupeGroupInvites(rawInvites: CapturedGroupInvite[]): CapturedGroupInvite[] {
+  const byKey = new Map<string, CapturedGroupInvite>();
+  const statusPriority: Record<string, number> = {
+    joined: 5,
+    requested: 4,
+    removed: 3,
+    members_too_low: 2,
+    not_joined: 1,
+    invalid: 0
+  };
+
+  for (const inv of rawInvites) {
+    if (!inv || typeof inv !== 'object') continue;
+    const normCode = String(inv.code || '')
+      .split('?')[0]
+      .split('#')[0]
+      .replace(/[\.,!?:;]+$/, '')
+      .trim();
+    const key = normCode || String(inv.url || '').trim();
+    if (!key) continue;
+
+    const normalized: CapturedGroupInvite = {
+      ...inv,
+      code: normCode || inv.code,
+      url: normCode ? `https://chat.whatsapp.com/${normCode}` : inv.url
+    };
+
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, normalized);
+      continue;
+    }
+
+    const existingTime = new Date(existing.savedAt || 0).getTime() || 0;
+    const nextTime = new Date(normalized.savedAt || 0).getTime() || 0;
+    const newer = nextTime >= existingTime ? normalized : existing;
+    const older = nextTime >= existingTime ? existing : normalized;
+
+    const bestName =
+      (newer.groupName && newer.groupName !== 'Unknown Group')
+        ? newer.groupName
+        : (older.groupName && older.groupName !== 'Unknown Group' ? older.groupName : (newer.groupName || older.groupName || 'Unknown Group'));
+
+    const existingPrio = statusPriority[existing.status || 'not_joined'] ?? 1;
+    const nextPrio = statusPriority[normalized.status || 'not_joined'] ?? 1;
+    const bestStatus = nextPrio >= existingPrio ? (normalized.status || existing.status || 'not_joined') : (existing.status || 'not_joined');
+
+    byKey.set(key, {
+      ...older,
+      ...newer,
+      code: normCode || newer.code || older.code,
+      url: normCode ? `https://chat.whatsapp.com/${normCode}` : (newer.url || older.url),
+      groupName: bestName,
+      groupDescription: newer.groupDescription || older.groupDescription,
+      groupSize: Math.max(Number(existing.groupSize || 0), Number(normalized.groupSize || 0)) || undefined,
+      groupJid: newer.groupJid || older.groupJid,
+      creatorJid: newer.creatorJid || older.creatorJid,
+      status: bestStatus,
+      joinedAt: newer.joinedAt || older.joinedAt,
+      requestedAt: newer.requestedAt || older.requestedAt,
+      removedAt: newer.removedAt || older.removedAt,
+      savedAt: newer.savedAt || older.savedAt
+    });
+  }
+
+  return Array.from(byKey.values());
+}
+
 function loadUserGroupInvites(username: string): CapturedGroupInvite[] {
   const filePath = path.join(getUserDir(username), 'group.json');
   try {
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       if (Array.isArray(data)) {
-        return data;
+        const deduped = dedupeGroupInvites(data);
+        if (deduped.length !== data.length) {
+          try {
+            fs.writeFileSync(filePath, JSON.stringify(deduped, null, 2), 'utf8');
+          } catch {}
+        }
+        return deduped;
       }
     }
   } catch (err) {}
@@ -826,42 +900,53 @@ function loadUserGroupInvites(username: string): CapturedGroupInvite[] {
 
 function saveCapturedGroupInvite(username: string, invite: CapturedGroupInvite): CapturedGroupInvite {
   try {
+    const cleanCode = String(invite.code || '')
+      .split('?')[0]
+      .split('#')[0]
+      .replace(/[\.,!?:;]+$/, '')
+      .trim();
+    const normalizedInvite: CapturedGroupInvite = {
+      ...invite,
+      code: cleanCode || invite.code,
+      url: cleanCode ? `https://chat.whatsapp.com/${cleanCode}` : invite.url
+    };
+
     const invites = loadUserGroupInvites(username);
-    const existingIndex = invites.findIndex(i => i.code === invite.code);
+    const existingIndex = invites.findIndex(i => i.code === normalizedInvite.code);
     const filePath = path.join(getUserDir(username), 'group.json');
     let finalInvite: CapturedGroupInvite;
     
     if (existingIndex > -1) {
       const existing = invites[existingIndex];
-      const updatedName = (invite.groupName && invite.groupName !== 'Unknown Group') ? invite.groupName : existing.groupName;
+      const updatedName = (normalizedInvite.groupName && normalizedInvite.groupName !== 'Unknown Group') ? normalizedInvite.groupName : existing.groupName;
       finalInvite = {
         ...existing,
-        ...invite,
+        ...normalizedInvite,
         groupName: updatedName,
-        groupDescription: invite.groupDescription || existing.groupDescription,
-        groupSize: typeof invite.groupSize === 'number' && invite.groupSize > 0 ? invite.groupSize : existing.groupSize,
-        groupJid: invite.groupJid || existing.groupJid,
-        creatorJid: invite.creatorJid || existing.creatorJid,
-        status: invite.status || existing.status || 'not_joined',
-        joinedAt: invite.joinedAt || existing.joinedAt,
-        requestedAt: invite.requestedAt || existing.requestedAt,
-        removedAt: invite.removedAt || existing.removedAt,
-        retryCount: typeof invite.retryCount === 'number' ? invite.retryCount : existing.retryCount,
-        nextRetryAt: invite.nextRetryAt || existing.nextRetryAt,
-        joinApprovalMode: invite.joinApprovalMode !== undefined ? invite.joinApprovalMode : existing.joinApprovalMode,
+        groupDescription: normalizedInvite.groupDescription || existing.groupDescription,
+        groupSize: typeof normalizedInvite.groupSize === 'number' && normalizedInvite.groupSize > 0 ? normalizedInvite.groupSize : existing.groupSize,
+        groupJid: normalizedInvite.groupJid || existing.groupJid,
+        creatorJid: normalizedInvite.creatorJid || existing.creatorJid,
+        status: normalizedInvite.status || existing.status || 'not_joined',
+        joinedAt: normalizedInvite.joinedAt || existing.joinedAt,
+        requestedAt: normalizedInvite.requestedAt || existing.requestedAt,
+        removedAt: normalizedInvite.removedAt || existing.removedAt,
+        retryCount: typeof normalizedInvite.retryCount === 'number' ? normalizedInvite.retryCount : existing.retryCount,
+        nextRetryAt: normalizedInvite.nextRetryAt || existing.nextRetryAt,
+        joinApprovalMode: normalizedInvite.joinApprovalMode !== undefined ? normalizedInvite.joinApprovalMode : existing.joinApprovalMode,
         savedAt: new Date().toISOString()
       };
       invites[existingIndex] = finalInvite;
-      fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
+      fs.writeFileSync(filePath, JSON.stringify(dedupeGroupInvites(invites), null, 2), 'utf8');
       addLog(username, `📂 Group Link Details Updated: "${finalInvite.groupName}" (${finalInvite.code}) - Status: ${finalInvite.status.toUpperCase()} (${finalInvite.groupSize || 0} members)`, 'info');
     } else {
       finalInvite = {
-        status: invite.status || 'not_joined',
-        ...invite,
+        status: normalizedInvite.status || 'not_joined',
+        ...normalizedInvite,
         savedAt: new Date().toISOString()
       };
       invites.push(finalInvite);
-      fs.writeFileSync(filePath, JSON.stringify(invites, null, 2), 'utf8');
+      fs.writeFileSync(filePath, JSON.stringify(dedupeGroupInvites(invites), null, 2), 'utf8');
       addLog(username, `📂 Group Link Captured: Saved "${finalInvite.groupName}" (${finalInvite.code}) - Status: ${finalInvite.status.toUpperCase()} (${finalInvite.groupSize || 0} members)`, 'success');
     }
 
