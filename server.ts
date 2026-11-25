@@ -4,6 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import os from 'os';
 import zlib from 'zlib';
+import util from 'util';
 import { createServer as createViteServer } from 'vite';
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, generateWAMessage, generateWAMessageFromContent, prepareWAMessageMedia, getUrlInfo, Browsers, fetchLatestBaileysVersion, proto, jidNormalizedUser, isJidGroup } from '@queenanya/baileys';
 import { Boom } from '@hapi/boom';
@@ -102,8 +103,17 @@ function normalizeFilePath(filePath: any): string | null {
 }
 
 // Single-doc gzipped Baileys auth bundle backup/restore (saves creds.json + all Signal/AppState/DeviceList keys in 1 Firestore write)
+const gzipAsync = util.promisify(zlib.gzip);
 const authBundleTimers = new Map<string, NodeJS.Timeout>();
 const pendingAuthBundleSyncs = new Set<string>();
+const activeAuthBundleSyncs = new Set<string>();
+const rerunAuthBundleSyncs = new Set<string>();
+
+// Debounced Firestore file backup queue (prevents burst writes & oversized docs from exhausting RAM/CPU)
+const fileSyncTimers = new Map<string, NodeJS.Timeout>();
+const pendingFileSyncPayloads = new Map<string, { relativePath: string; content: string; isBinary: boolean }>();
+const oversizedFileWarned = new Set<string>();
+const FIRESTORE_MAX_SAFE_CONTENT_BYTES = 880 * 1024; // Stay safely under Firestore's 1 MiB document limit
 
 function parseAuthFolderInfo(relativePath: string): { username: string; sessionId: string; fileName: string } | null {
   const normalized = relativePath.replace(/\\/g, '/');
@@ -122,51 +132,80 @@ function getAuthBundleDocId(username: string, sessionId: string): string {
 
 async function syncAuthBundleToFirestore(username: string, sessionId: string): Promise<void> {
   if (!db || isQuotaExceeded) return;
+  const key = `${username}:${sessionId}`;
+  if (activeAuthBundleSyncs.has(key)) {
+    rerunAuthBundleSyncs.add(key);
+    return;
+  }
+
   const authFolder = path.join(process.cwd(), 'data', username, 'auth_info_' + sessionId);
   const credsPath = path.join(authFolder, 'creds.json');
   if (!fs.existsSync(credsPath)) return;
 
+  activeAuthBundleSyncs.add(key);
   try {
-    const entries = fs.readdirSync(authFolder);
-    // Prioritize essential state files first so even very old sessions stay well under Firestore's 1MB limit
-    const withStats = entries
-      .filter(f => !f.startsWith('.'))
-      .map(f => {
-        const full = path.join(authFolder, f);
-        try {
-          const st = fs.statSync(full);
-          if (!st.isFile()) return null;
-          let priority = 3;
-          if (f === 'creds.json') priority = 0;
-          else if (f.startsWith('app-state-sync-') || f.startsWith('device-list-') || f.startsWith('lid-mapping-')) priority = 1;
-          else if (f.startsWith('pre-key-')) priority = 2;
-          return { name: f, full, mtimeMs: st.mtimeMs, priority };
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean) as Array<{ name: string; full: string; mtimeMs: number; priority: number }>;
+    const entries = await fs.promises.readdir(authFolder);
+    // Prioritize essential state files first so even very active multi-group sessions stay tiny & fast
+    const withStats: Array<{ name: string; full: string; mtimeMs: number; size: number; priority: number }> = [];
+    for (const f of entries) {
+      if (f.startsWith('.')) continue;
+      const full = path.join(authFolder, f);
+      try {
+        const st = await fs.promises.stat(full);
+        if (!st.isFile()) continue;
+        let priority = 3;
+        if (f === 'creds.json') priority = 0;
+        else if (f.startsWith('app-state-sync-') || f.startsWith('device-list-') || f.startsWith('lid-mapping-')) priority = 1;
+        else if (f.startsWith('pre-key-')) priority = 2;
+        withStats.push({ name: f, full, mtimeMs: st.mtimeMs, size: st.size, priority });
+      } catch {}
+    }
 
     withStats.sort((a, b) => (a.priority - b.priority) || (b.mtimeMs - a.mtimeMs));
 
+    // Pre-cap low-priority Signal session/sender-key files BEFORE reading/gzipping so hundreds of active groups never bloat RAM/CPU
+    const MAX_RAW_BYTES = 1800 * 1024;
+    const MAX_LOW_PRIORITY_FILES = 250;
     const filesMap: Record<string, string> = {};
+    const includedLowPriorityNames: string[] = [];
+    let rawBytes = 0;
+
     for (const entry of withStats) {
+      if (entry.priority >= 3) {
+        if (includedLowPriorityNames.length >= MAX_LOW_PRIORITY_FILES) continue;
+        if (rawBytes + entry.size > MAX_RAW_BYTES) continue;
+      }
       try {
-        filesMap[entry.name] = fs.readFileSync(entry.full, 'utf8');
+        const content = await fs.promises.readFile(entry.full, 'utf8');
+        filesMap[entry.name] = content;
+        rawBytes += Buffer.byteLength(content, 'utf8');
+        if (entry.priority >= 3) {
+          includedLowPriorityNames.push(entry.name);
+        }
       } catch {}
     }
 
     if (!filesMap['creds.json']) return;
 
-    let compressedB64 = zlib.gzipSync(Buffer.from(JSON.stringify(filesMap), 'utf8')).toString('base64');
-    // Trim oldest low-priority session/sender keys only if gzipped payload exceeds 720KB
-    if (compressedB64.length > 720 * 1024) {
-      const removable = withStats.filter(e => e.priority >= 3).reverse();
-      for (const rem of removable) {
-        delete filesMap[rem.name];
-        compressedB64 = zlib.gzipSync(Buffer.from(JSON.stringify(filesMap), 'utf8')).toString('base64');
-        if (compressedB64.length <= 720 * 1024) break;
+    let compressedB64 = (await gzipAsync(Buffer.from(JSON.stringify(filesMap), 'utf8'))).toString('base64');
+
+    // Trim oldest low-priority session/sender keys in large chunks (25% at a time, NOT 1-by-1) if gzipped payload exceeds 700KB
+    if (compressedB64.length > 700 * 1024 && includedLowPriorityNames.length > 0) {
+      const removable = includedLowPriorityNames.reverse(); // oldest first
+      let removedIdx = 0;
+      while (compressedB64.length > 700 * 1024 && removedIdx < removable.length) {
+        const remaining = removable.length - removedIdx;
+        const dropCount = Math.max(10, Math.ceil(remaining * 0.35));
+        for (let i = 0; i < dropCount && removedIdx < removable.length; i++, removedIdx++) {
+          delete filesMap[removable[removedIdx]];
+        }
+        compressedB64 = (await gzipAsync(Buffer.from(JSON.stringify(filesMap), 'utf8'))).toString('base64');
       }
+    }
+
+    if (compressedB64.length > 880 * 1024) {
+      console.warn(`[FIREBASE] Skipping auth bundle (${key}): compressed size ${(compressedB64.length / 1024).toFixed(0)}KB exceeds safe Firestore limit.`);
+      return;
     }
 
     const docId = getAuthBundleDocId(username, sessionId);
@@ -180,14 +219,22 @@ async function syncAuthBundleToFirestore(username: string, sessionId: string): P
     });
   } catch (err: any) {
     handleFirestoreError(`Error syncing auth bundle (${username}:${sessionId}) to Firestore`, err);
+  } finally {
+    activeAuthBundleSyncs.delete(key);
+    if (rerunAuthBundleSyncs.has(key)) {
+      rerunAuthBundleSyncs.delete(key);
+      scheduleAuthBundleSync(username, sessionId, 30000);
+    }
   }
 }
 
-function scheduleAuthBundleSync(username: string, sessionId: string, delayMs = 3500) {
+function scheduleAuthBundleSync(username: string, sessionId: string, delayMs = 30000) {
   if (!db || isQuotaExceeded) return;
   const key = `${username}:${sessionId}`;
   pendingAuthBundleSyncs.add(key);
+  // Keep an existing sooner timer if one is already scheduled (e.g. creds.json 5s timer should not be pushed back to 45s by sender-key noise)
   if (authBundleTimers.has(key)) {
+    if (delayMs > 6000) return;
     clearTimeout(authBundleTimers.get(key)!);
   }
   const timer = setTimeout(() => {
@@ -199,6 +246,28 @@ function scheduleAuthBundleSync(username: string, sessionId: string, delayMs = 3
 }
 
 async function flushAllPendingAuthBundles() {
+  // Also flush any debounced file syncs before shutdown
+  const fileFlushTasks: Promise<void>[] = [];
+  for (const [docId, timer] of fileSyncTimers.entries()) {
+    clearTimeout(timer);
+    fileSyncTimers.delete(docId);
+  }
+  if (db && !isQuotaExceeded) {
+    for (const [docId, payload] of pendingFileSyncPayloads.entries()) {
+      pendingFileSyncPayloads.delete(docId);
+      fileFlushTasks.push(
+        setDoc(doc(db, 'files', docId), {
+          path: payload.relativePath,
+          content: payload.content,
+          isBinary: payload.isBinary,
+          updatedAt: new Date().toISOString()
+        }).catch(err => handleFirestoreError('Error flushing file to Firestore', err))
+      );
+    }
+  } else {
+    pendingFileSyncPayloads.clear();
+  }
+
   const keys = new Set<string>(pendingAuthBundleSyncs);
   for (const [k, timer] of authBundleTimers.entries()) {
     clearTimeout(timer);
@@ -211,7 +280,7 @@ async function flushAllPendingAuthBundles() {
       keys.add(userSessKey);
     }
   }
-  const tasks: Promise<void>[] = [];
+  const tasks: Promise<void>[] = [...fileFlushTasks];
   for (const key of keys) {
     const idx = key.indexOf(':');
     if (idx > 0) {
@@ -226,6 +295,7 @@ async function flushAllPendingAuthBundles() {
 function deleteAuthBundleFromFirestore(username: string, sessionId: string) {
   const key = `${username}:${sessionId}`;
   pendingAuthBundleSyncs.delete(key);
+  rerunAuthBundleSyncs.delete(key);
   if (authBundleTimers.has(key)) {
     clearTimeout(authBundleTimers.get(key)!);
     authBundleTimers.delete(key);
@@ -234,6 +304,37 @@ function deleteAuthBundleFromFirestore(username: string, sessionId: string) {
   deleteDoc(doc(db, 'app_data', getAuthBundleDocId(username, sessionId))).catch(err => {
     handleFirestoreError(`Error deleting auth bundle (${key}) from Firestore`, err);
   });
+}
+
+function scheduleFileSyncToFirestore(docId: string, relativePath: string, content: string, isBinary: boolean, delayMs = 2500) {
+  if (!db || isQuotaExceeded) return;
+  if (Buffer.byteLength(content, 'utf8') > FIRESTORE_MAX_SAFE_CONTENT_BYTES) {
+    if (!oversizedFileWarned.has(docId)) {
+      oversizedFileWarned.add(docId);
+      console.warn(`[FIREBASE] Skipping Firestore sync for "${relativePath}" (${Math.round(Buffer.byteLength(content, 'utf8') / 1024)}KB exceeds Firestore 1MB doc limit). Keeping local disk copy.`);
+    }
+    return;
+  }
+
+  pendingFileSyncPayloads.set(docId, { relativePath, content, isBinary });
+  if (fileSyncTimers.has(docId)) {
+    clearTimeout(fileSyncTimers.get(docId)!);
+  }
+  const timer = setTimeout(() => {
+    fileSyncTimers.delete(docId);
+    const payload = pendingFileSyncPayloads.get(docId);
+    pendingFileSyncPayloads.delete(docId);
+    if (!payload || !db || isQuotaExceeded) return;
+    setDoc(doc(db, 'files', docId), {
+      path: payload.relativePath,
+      content: payload.content,
+      isBinary: payload.isBinary,
+      updatedAt: new Date().toISOString()
+    }).catch(err => {
+      handleFirestoreError('Error backing up file to Firestore', err);
+    });
+  }, delayMs);
+  fileSyncTimers.set(docId, timer);
 }
 
 function syncFileToFirestore(rawFilePath: any, data: any) {
@@ -245,11 +346,16 @@ function syncFileToFirestore(rawFilePath: any, data: any) {
     if (!relativePath.startsWith('..') && !path.isAbsolute(relativePath)) {
       if (relativePath.startsWith('data' + path.sep) || relativePath === 'data') {
         const fileName = path.basename(relativePath);
-        const authInfo = parseAuthFolderInfo(relativePath);
 
+        // Never sync high-churn volatile debug logs to Firestore
+        if (fileName === 'logs.json') {
+          return;
+        }
+
+        const authInfo = parseAuthFolderInfo(relativePath);
         if (authInfo) {
-          // Bundle creds.json + all Signal/AppState/DeviceList keys into ONE debounced Firestore doc
-          scheduleAuthBundleSync(authInfo.username, authInfo.sessionId, fileName === 'creds.json' ? 2000 : 4000);
+          // Bundle creds.json + Signal/AppState keys into ONE heavily debounced async Firestore doc
+          scheduleAuthBundleSync(authInfo.username, authInfo.sessionId, fileName === 'creds.json' ? 5000 : 45000);
           if (fileName !== 'creds.json') {
             return;
           }
@@ -259,15 +365,7 @@ function syncFileToFirestore(rawFilePath: any, data: any) {
           const content = Buffer.isBuffer(data) ? data.toString('base64') : data;
           const isBinary = Buffer.isBuffer(data);
           const docId = relativePath.replace(/[\/\\]/g, '___');
-          
-          setDoc(doc(db, 'files', docId), {
-            path: relativePath,
-            content: content,
-            isBinary: isBinary,
-            updatedAt: new Date().toISOString()
-          }).catch(err => {
-            handleFirestoreError('Error backing up file to Firestore', err);
-          });
+          scheduleFileSyncToFirestore(docId, relativePath, content, isBinary, fileName === 'creds.json' ? 1500 : 2500);
         }
       }
     }
@@ -291,7 +389,7 @@ function syncDeleteToFirestore(rawFilePath: any) {
           if (fileName === 'creds.json') {
             deleteAuthBundleFromFirestore(authInfo.username, authInfo.sessionId);
           } else {
-            scheduleAuthBundleSync(authInfo.username, authInfo.sessionId, 4000);
+            scheduleAuthBundleSync(authInfo.username, authInfo.sessionId, 45000);
             return;
           }
         }
@@ -1569,6 +1667,7 @@ interface QueueItem {
   attachmentType?: 'none' | 'image' | 'video' | 'pdf' | 'doc';
   attachmentUrl?: string;
   attachmentData?: string;
+  attachmentPath?: string;
   attachmentName?: string;
   inlineAttachment?: boolean;
   buttons?: any[];
@@ -1609,6 +1708,22 @@ function saveUserPausedQueues(username: string, paused: string[]) {
   fs.writeFileSync(filePath, JSON.stringify(paused, null, 2), 'utf8');
 }
 
+function pruneQueueHistory(queue: QueueItem[], maxCompleted = 300): QueueItem[] {
+  let completedCount = 0;
+  for (const item of queue) {
+    if (item.status === 'sent' || item.status === 'failed') completedCount++;
+  }
+  if (completedCount <= maxCompleted) return queue;
+  let toDrop = completedCount - maxCompleted;
+  return queue.filter(item => {
+    if ((item.status === 'sent' || item.status === 'failed') && toDrop > 0) {
+      toDrop--;
+      return false;
+    }
+    return true;
+  });
+}
+
 function loadUserQueue(username: string): QueueItem[] {
   const filePath = path.join(getUserDir(username), 'queue.json');
   try {
@@ -1621,7 +1736,8 @@ function loadUserQueue(username: string): QueueItem[] {
 
 function saveUserQueue(username: string, queue: QueueItem[]) {
   const filePath = path.join(getUserDir(username), 'queue.json');
-  fs.writeFileSync(filePath, JSON.stringify(queue, null, 2), 'utf8');
+  const trimmed = pruneQueueHistory(queue, 300);
+  fs.writeFileSync(filePath, JSON.stringify(trimmed), 'utf8');
 }
 
 function loadUserSentMessages(username: string): Array<{ id: string; phoneNumber: string; message: string; timestamp: string; status: 'sent' | 'failed'; error?: string }> {
@@ -1636,22 +1752,47 @@ function loadUserSentMessages(username: string): Array<{ id: string; phoneNumber
 
 function saveUserSentMessages(username: string, messages: any[]) {
   const filePath = path.join(getUserDir(username), 'sent_messages.json');
-  fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), 'utf8');
+  // Keep history bounded to latest 1000 records so JSON serialization & Firestore sync stay lightweight
+  const bounded = messages.length > 1000 ? messages.slice(-1000) : messages;
+  fs.writeFileSync(filePath, JSON.stringify(bounded), 'utf8');
 }
 
+// In-memory cached logs with debounced async disk flush (eliminates synchronous read/write thrashing under high group traffic)
+const userLogsCache = new Map<string, Array<{ id: string; timestamp: string; message: string; type: 'info' | 'error' | 'success' }>>();
+const userLogsFlushTimers = new Map<string, NodeJS.Timeout>();
+
 function loadUserLogs(username: string): Array<{ id: string; timestamp: string; message: string; type: 'info' | 'error' | 'success' }> {
+  const cached = userLogsCache.get(username);
+  if (cached) return cached;
   const filePath = path.join(getUserDir(username), 'logs.json');
+  let parsed: Array<{ id: string; timestamp: string; message: string; type: 'info' | 'error' | 'success' }> = [];
   try {
     if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (Array.isArray(data)) parsed = data.slice(-100);
     }
   } catch (err) {}
-  return [];
+  userLogsCache.set(username, parsed);
+  return parsed;
 }
 
 function saveUserLogs(username: string, logs: any[]) {
-  const filePath = path.join(getUserDir(username), 'logs.json');
-  fs.writeFileSync(filePath, JSON.stringify(logs, null, 2), 'utf8');
+  const bounded = Array.isArray(logs) ? logs.slice(-100) : [];
+  userLogsCache.set(username, bounded);
+  if (userLogsFlushTimers.has(username)) return;
+  const timer = setTimeout(() => {
+    userLogsFlushTimers.delete(username);
+    const latest = userLogsCache.get(username);
+    if (!latest) return;
+    const filePath = path.join(getUserDir(username), 'logs.json');
+    const serialized = JSON.stringify(latest);
+    if (originalPromisesWriteFile) {
+      originalPromisesWriteFile(filePath, serialized, 'utf8').catch(() => {});
+    } else {
+      try { originalWriteFileSync(filePath, serialized, 'utf8'); } catch {}
+    }
+  }, 2000);
+  userLogsFlushTimers.set(username, timer);
 }
 
 function addLog(username: string, message: string, type: 'info' | 'error' | 'success' = 'info') {
@@ -1686,6 +1827,27 @@ function pushToUserQueue(username: string, item: Omit<QueueItem, 'id' | 'status'
   addLog(username, `Queue: Added message for ${item.recipient} (Session: ${item.sessionId})`, 'info');
   processUserQueue(username);
   return newItem;
+}
+
+function pushBatchToUserQueue(username: string, items: Array<Omit<QueueItem, 'id' | 'status' | 'addedAt'>>, summaryLabel?: string): QueueItem[] {
+  if (!items || items.length === 0) return [];
+  const queue = loadUserQueue(username);
+  const nowIso = new Date().toISOString();
+  const created: QueueItem[] = items.map((item, idx) => ({
+    ...item,
+    id: `${Date.now().toString(36)}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+    status: 'pending',
+    addedAt: nowIso
+  }));
+  queue.push(...created);
+  saveUserQueue(username, queue);
+  addLog(
+    username,
+    summaryLabel || `Queue: Batch added ${created.length} message(s) to queue.`,
+    'info'
+  );
+  processUserQueue(username);
+  return created;
 }
 
 async function processUserQueue(username: string) {
@@ -1990,6 +2152,7 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
     attachmentType = 'none',
     attachmentUrl,
     attachmentData,
+    attachmentPath,
     attachmentName,
     inlineAttachment = false,
     buttons,
@@ -2045,7 +2208,9 @@ async function sendMessageDirectly(sockInstance: any, item: QueueItem, username:
 
     let fileRef: any = null;
     if (attachmentType && attachmentType !== 'none') {
-      if (attachmentData) {
+      if (attachmentPath && fs.existsSync(attachmentPath)) {
+        fileRef = { url: attachmentPath };
+      } else if (attachmentData) {
         try {
           const localCachedPath = await getCachedUploadMedia(attachmentData, attachmentName || '', username);
           fileRef = { url: localCachedPath };
@@ -2798,7 +2963,44 @@ async function executeSavedCode(
       return { success: false, enqueuedCount: 0, error: errMsg };
     }
 
-    let enqueuedCount = 0;
+    const baseSequence = (Array.isArray(savedCode.messagesSequence) && savedCode.messagesSequence.length > 0)
+      ? savedCode.messagesSequence
+      : [{
+          message: savedCode.message || '',
+          msgType: savedCode.msgType || 'text',
+          footer: savedCode.footer,
+          attachmentType: savedCode.attachmentType || 'none',
+          attachmentUrl: savedCode.attachmentUrl,
+          attachmentData: savedCode.attachmentData,
+          attachmentName: savedCode.attachmentName,
+          inlineAttachment: !!savedCode.inlineAttachment,
+          buttons: savedCode.buttons,
+          templateButtons: savedCode.templateButtons,
+          listButtonText: savedCode.listButtonText,
+          listSections: savedCode.listSections,
+          customDelaySeconds: savedCode.interMessageDelaySeconds ?? savedCode.delaySeconds
+        }];
+
+    const resolvedSequence = await Promise.all(
+      baseSequence.map(async (seqItem: any) => {
+        const rawAttachData = seqItem.attachmentData || savedCode.attachmentData;
+        const attachName = seqItem.attachmentName || savedCode.attachmentName;
+        let cachedAttachPath: string | undefined;
+        if (rawAttachData) {
+          try {
+            cachedAttachPath = await getCachedUploadMedia(rawAttachData, attachName || '', username);
+          } catch {}
+        }
+        return {
+          ...seqItem,
+          resolvedAttachPath: cachedAttachPath,
+          resolvedAttachData: cachedAttachPath ? undefined : rawAttachData,
+          resolvedAttachName: attachName
+        };
+      })
+    );
+
+    const allBatchItems: Array<Omit<QueueItem, 'id' | 'status' | 'addedAt'>> = [];
     let skippedBanned = 0;
 
     for (let i = 0; i < rawRecipients.length; i++) {
@@ -2825,30 +3027,11 @@ async function executeSavedCode(
 
       if (isJidBlocked(targetJid)) {
         skippedBanned++;
-        addLog(username, `🚫 Saved Code .${savedCode.code}: Skipped ${targetJid} (Banned globally)`, 'info');
         continue;
       }
 
-      const sequence = (Array.isArray(savedCode.messagesSequence) && savedCode.messagesSequence.length > 0)
-        ? savedCode.messagesSequence
-        : [{
-            message: savedCode.message || '',
-            msgType: savedCode.msgType || 'text',
-            footer: savedCode.footer,
-            attachmentType: savedCode.attachmentType || 'none',
-            attachmentUrl: savedCode.attachmentUrl,
-            attachmentData: savedCode.attachmentData,
-            attachmentName: savedCode.attachmentName,
-            inlineAttachment: !!savedCode.inlineAttachment,
-            buttons: savedCode.buttons,
-            templateButtons: savedCode.templateButtons,
-            listButtonText: savedCode.listButtonText,
-            listSections: savedCode.listSections,
-            customDelaySeconds: savedCode.interMessageDelaySeconds ?? savedCode.delaySeconds
-          }];
-
-      for (const seqItem of sequence) {
-        pushToUserQueue(username, {
+      for (const seqItem of resolvedSequence) {
+        allBatchItems.push({
           recipient: targetJid,
           recipientType: savedCode.recipientType === 'individual' ? 'individual' : 'group',
           messageType: seqItem.msgType || (savedCode.msgType as any) || 'text',
@@ -2856,8 +3039,9 @@ async function executeSavedCode(
           footer: seqItem.footer || savedCode.footer,
           attachmentType: seqItem.attachmentType || (savedCode.attachmentType as any) || 'none',
           attachmentUrl: seqItem.attachmentUrl || savedCode.attachmentUrl,
-          attachmentData: seqItem.attachmentData || savedCode.attachmentData,
-          attachmentName: seqItem.attachmentName || savedCode.attachmentName,
+          attachmentPath: seqItem.resolvedAttachPath,
+          attachmentData: seqItem.resolvedAttachData,
+          attachmentName: seqItem.resolvedAttachName,
           inlineAttachment: seqItem.inlineAttachment ?? !!savedCode.inlineAttachment,
           buttons: seqItem.buttons || savedCode.buttons,
           templateButtons: seqItem.templateButtons || savedCode.templateButtons,
@@ -2867,7 +3051,6 @@ async function executeSavedCode(
           tagGroupMembers: !!savedCode.tagGroupMembers,
           customDelaySeconds: typeof seqItem.customDelaySeconds === 'number' ? seqItem.customDelaySeconds : savedCode.interMessageDelaySeconds
         });
-        enqueuedCount++;
       }
     }
 
@@ -2875,8 +3058,16 @@ async function executeSavedCode(
       globalDelaySeconds = savedCode.delaySeconds;
     }
 
-    addLog(username, `🚀 Executed Saved Code .${savedCode.code}: Enqueued ${enqueuedCount} message(s) (Skipped ${skippedBanned} banned). Triggered via ${triggerSource}.`, 'success');
-    processUserQueue(username);
+    const enqueuedCount = allBatchItems.length;
+    if (enqueuedCount > 0) {
+      pushBatchToUserQueue(
+        username,
+        allBatchItems,
+        `🚀 Executed Saved Code .${savedCode.code}: Enqueued ${enqueuedCount} message(s) (Skipped ${skippedBanned} banned). Triggered via ${triggerSource}.`
+      );
+    } else {
+      addLog(username, `🚀 Executed Saved Code .${savedCode.code}: Enqueued 0 message(s) (Skipped ${skippedBanned} banned). Triggered via ${triggerSource}.`, 'info');
+    }
 
     if (sockInstance && replyJid) {
       await sockInstance.sendMessage(
@@ -2921,12 +3112,18 @@ interface UserSettings {
   autoRequestAdminApproval?: boolean; // defaults to true
 }
 
+// In-memory cache for UserSettings so high-volume incoming group messages never block on synchronous fs.readFileSync
+const userSettingsCache = new Map<string, UserSettings>();
+
 function loadUserSettings(username: string): UserSettings {
+  const cached = userSettingsCache.get(username);
+  if (cached) return cached;
+
   const filePath = path.join(getUserDir(username), 'settings.json');
   try {
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      return {
+      const parsed: UserSettings = {
         secretPrefix: data.secretPrefix || '.',
         disableTextProcessing: !!data.disableTextProcessing,
         shareBatchSize: typeof data.shareBatchSize === 'number' && data.shareBatchSize > 0 ? data.shareBatchSize : 5,
@@ -2942,6 +3139,8 @@ function loadUserSettings(username: string): UserSettings {
         autoRetryIntervalMinutes: typeof data.autoRetryIntervalMinutes === 'number' && data.autoRetryIntervalMinutes > 0 ? data.autoRetryIntervalMinutes : 15,
         autoRequestAdminApproval: data.autoRequestAdminApproval !== undefined ? !!data.autoRequestAdminApproval : true
       };
+      userSettingsCache.set(username, parsed);
+      return parsed;
     }
   } catch (err) {}
   
@@ -2958,6 +3157,7 @@ function loadUserSettings(username: string): UserSettings {
     autoRetryIntervalMinutes: 15,
     autoRequestAdminApproval: true
   };
+  userSettingsCache.set(username, defaultSettings);
   try {
     fs.writeFileSync(filePath, JSON.stringify(defaultSettings, null, 2), 'utf8');
   } catch (err) {}
@@ -2984,6 +3184,7 @@ function saveUserSettings(username: string, settings: Partial<UserSettings>) {
       autoRetryIntervalMinutes: typeof settings.autoRetryIntervalMinutes === 'number' && settings.autoRetryIntervalMinutes > 0 ? settings.autoRetryIntervalMinutes : (existing.autoRetryIntervalMinutes || 15),
       autoRequestAdminApproval: settings.autoRequestAdminApproval !== undefined ? !!settings.autoRequestAdminApproval : (existing.autoRequestAdminApproval !== undefined ? existing.autoRequestAdminApproval : true)
     };
+    userSettingsCache.set(username, updated);
     fs.writeFileSync(filePath, JSON.stringify(updated, null, 2), 'utf8');
     addLog(username, `User settings updated successfully.`, 'success');
   } catch (err: any) {
@@ -5495,7 +5696,8 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
       logger: pino({ level: 'silent' }),
       browser: Browsers.ubuntu('Chrome'),
       syncFullHistory: false,
-      generateHighQualityLinkPreview: true,
+      shouldSyncHistoryMessage: () => false,
+      generateHighQualityLinkPreview: false,
       markOnlineOnConnect: false,
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
@@ -5507,10 +5709,32 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
 
     session.sock = sockInstance;
 
+    // Cached groupFetchAllParticipating per session (5 min TTL) so high-volume group links never storm WhatsApp servers or OOM RAM
+    let cachedParticipatingGroups: { data: Record<string, any>; fetchedAt: number } | null = null;
+    let inFlightParticipatingFetch: Promise<Record<string, any> | undefined> | null = null;
+    const getCachedParticipatingGroups = async (): Promise<Record<string, any> | undefined> => {
+      const now = Date.now();
+      if (cachedParticipatingGroups && (now - cachedParticipatingGroups.fetchedAt) < 5 * 60 * 1000) {
+        return cachedParticipatingGroups.data;
+      }
+      if (inFlightParticipatingFetch) return inFlightParticipatingFetch;
+      if (!sockInstance || typeof sockInstance.groupFetchAllParticipating !== 'function') return undefined;
+      inFlightParticipatingFetch = sockInstance.groupFetchAllParticipating()
+        .then((res: Record<string, any>) => {
+          cachedParticipatingGroups = { data: res || {}, fetchedAt: Date.now() };
+          return cachedParticipatingGroups.data;
+        })
+        .catch(() => cachedParticipatingGroups?.data)
+        .finally(() => {
+          inFlightParticipatingFetch = null;
+        });
+      return inFlightParticipatingFetch;
+    };
+
     sockInstance.ev.on('creds.update', async () => {
       try {
         await saveCreds();
-        scheduleAuthBundleSync(username, id, 2500);
+        scheduleAuthBundleSync(username, id, 5000);
       } catch (err: any) {
         console.error(`[SESSION: ${id}] Failed saving Baileys credentials:`, err?.message || err);
       }
@@ -5702,12 +5926,14 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
     });
 
     sockInstance.ev.on('messages.upsert', async (m: any) => {
-      if (m.type === 'notify' || m.type === 'append') {
+      // Only process live incoming/outgoing notifications ('notify'); skip 'append' bulk offline history dumps from hundreds of active groups
+      if (m.type === 'notify') {
         for (const msg of m.messages) {
-          const from = msg.key.remoteJid;
+          const from = msg.key?.remoteJid;
+          if (!from || from === 'status@broadcast' || !msg.message) continue;
           const isMe = msg.key.fromMe;
 
-          // 1. Comprehensive WhatsApp Group link & native invite scanner (runs on ALL incoming & outgoing messages, groups & DMs, text & media captions & ephemeral messages)
+          // 1. Comprehensive WhatsApp Group link & native invite scanner (runs on ALL live incoming & outgoing messages, groups & DMs, text & media captions & ephemeral messages)
           if (from && from !== 'status@broadcast') {
             try {
               const isGroup = from.endsWith('@g.us');
@@ -5723,14 +5949,9 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
               const groupCodes = scanText ? extractGroupInviteCodes(scanText) : [];
 
               if (nativeInvites.length > 0 || groupCodes.length > 0) {
-                // Serialize multi-link extraction per message & share participating cache so messages with many links never hit rate limits or overwrite one another
+                // Serialize multi-link extraction per message & reuse 5-min cached participating list so active groups never storm WhatsApp or OOM
                 (async () => {
-                  let preloadedParticipating: Record<string, any> | undefined;
-                  try {
-                    if (sockInstance && typeof sockInstance.groupFetchAllParticipating === 'function') {
-                      preloadedParticipating = await sockInstance.groupFetchAllParticipating();
-                    }
-                  } catch (e) {}
+                  const preloadedParticipating = await getCachedParticipatingGroups();
 
                   const processedInMsg = new Set<string>();
 
@@ -7024,7 +7245,10 @@ function sanitizeKeepAliveBaseUrl(rawUrl?: string): string {
   }
 }
 
+let cachedKeepAliveConfig: KeepAliveConfig | null = null;
+
 function loadKeepAliveConfig(): KeepAliveConfig {
+  if (cachedKeepAliveConfig) return cachedKeepAliveConfig;
   const envUrl = sanitizeKeepAliveBaseUrl(
     process.env.APP_URL || process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ''
   );
@@ -7037,20 +7261,22 @@ function loadKeepAliveConfig(): KeepAliveConfig {
       const intervalMinutes = typeof parsed.intervalMinutes === 'number' && parsed.intervalMinutes >= 1 && parsed.intervalMinutes <= 15
         ? Math.round(parsed.intervalMinutes)
         : 4;
-      return {
+      cachedKeepAliveConfig = {
         mode,
         intervalMinutes,
         customUrl: sanitizeKeepAliveBaseUrl(parsed.customUrl) || undefined,
         detectedPublicUrl: sanitizeKeepAliveBaseUrl(parsed.detectedPublicUrl) || envUrl || undefined,
         updatedAt: parsed.updatedAt
       };
+      return cachedKeepAliveConfig;
     }
   } catch {}
-  return {
+  cachedKeepAliveConfig = {
     mode: 'always',
     intervalMinutes: 4,
     detectedPublicUrl: envUrl || undefined
   };
+  return cachedKeepAliveConfig;
 }
 
 function saveKeepAliveConfig(partial: Partial<KeepAliveConfig>): KeepAliveConfig {
@@ -7076,6 +7302,7 @@ function saveKeepAliveConfig(partial: Partial<KeepAliveConfig>): KeepAliveConfig
     updatedAt: new Date().toISOString()
   };
 
+  cachedKeepAliveConfig = updated;
   try {
     fs.writeFileSync(keepAliveConfigPath, JSON.stringify(updated, null, 2), 'utf8');
   } catch (err) {
@@ -7293,12 +7520,13 @@ function requireAuth(req: any, res: any, next: any) {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const isRailway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_STATIC_URL);
+  const PORT = isRailway ? (Number(process.env.PORT) || 3000) : 3000;
 
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-  // Auto-detect public hosted URL from incoming reverse-proxy headers (Cloud Run / Render / custom domain)
+  // Auto-detect public hosted URL from incoming reverse-proxy headers (Cloud Run / Render / Railway / custom domain)
   app.use((req, _res, next) => {
     try {
       const forwardedHost = (req.headers['x-forwarded-host'] as string || '').split(',')[0].trim();
@@ -7324,6 +7552,9 @@ async function startServer() {
   // Restore all files from Firestore before starting server routes & connects
   try {
     await restoreAllFilesFromFirestore();
+    userSettingsCache.clear();
+    userLogsCache.clear();
+    cachedKeepAliveConfig = null;
     
     // Reload tokens after restore
     const loaded = loadTokens();
@@ -9768,9 +9999,11 @@ function getFirestoreStatusPayload() {
 
   // Message Queue & Wait Timers APIs
   app.get('/api/queue', requireAuth, (req: any, res) => {
+    // Strip heavy base64 attachmentData blobs if any legacy queue items still have them so 2s polling stays instant
+    const lightweightQueue = loadUserQueue(req.username).map(({ attachmentData: _raw, ...rest }) => rest);
     res.json({
       success: true,
-      queue: loadUserQueue(req.username),
+      queue: lightweightQueue,
       isProcessing: processingQueues.has(req.username),
       delaySeconds: globalDelaySeconds
     });
@@ -9967,7 +10200,7 @@ function getFirestoreStatusPayload() {
       return res.status(400).json({ success: false, error: 'No connected sessions selected. Please select at least one connected account.' });
     }
 
-    const addedItems = [];
+    const templateBatch: Array<Omit<QueueItem, 'id' | 'status' | 'addedAt'>> = [];
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i];
       const assignedSessionId = getAssignedSessionIdForRecipient(req.username, recipient, recipientType, validSessions[i % validSessions.length], validSessions);
@@ -9984,7 +10217,7 @@ function getFirestoreStatusPayload() {
         }
       }
 
-      const item = pushToUserQueue(req.username, {
+      templateBatch.push({
         recipient: targetJid,
         recipientType,
         messageType: 'template',
@@ -9996,8 +10229,13 @@ function getFirestoreStatusPayload() {
         sessionId: assignedSessionId,
         tagGroupMembers: !!tagGroupMembers
       });
-      addedItems.push(item);
     }
+
+    const addedItems = pushBatchToUserQueue(
+      req.username,
+      templateBatch,
+      `Queue: Batch added ${templateBatch.length} template message(s) across ${validSessions.length} session(s).`
+    );
 
     res.json({
       success: true,
@@ -10076,8 +10314,37 @@ function getFirestoreStatusPayload() {
       return res.status(400).json({ success: false, error: 'No connected sessions selected. Please select at least one connected account.' });
     }
 
-    const addedItems = [];
+    // Deduplicate any uploaded base64 attachment ONCE to disk before queueing across 100+ recipients
+    // so queue.json never stores 100 copies of a multi-MB base64 string (prevents V8 OOM & Firestore 1MB crashes)
+    let topLevelAttachmentPath: string | undefined;
+    if (attachmentData) {
+      try {
+        topLevelAttachmentPath = await getCachedUploadMedia(attachmentData, attachmentName || '', req.username);
+      } catch (err: any) {
+        addLog(req.username, `Queue Warning: Failed caching top-level upload: ${err.message}`, 'error');
+      }
+    }
+    const resolvedSequenceItems = await Promise.all(
+      sequenceItems.map(async (seqItem: any) => {
+        const rawSeqData = seqItem.attachmentData;
+        const seqName = seqItem.attachmentName || attachmentName;
+        let resolvedPath = topLevelAttachmentPath;
+        if (rawSeqData && rawSeqData !== attachmentData) {
+          try {
+            resolvedPath = await getCachedUploadMedia(rawSeqData, seqName || '', req.username);
+          } catch {}
+        }
+        return {
+          ...seqItem,
+          resolvedAttachmentPath: resolvedPath,
+          resolvedAttachmentData: resolvedPath ? undefined : (rawSeqData || attachmentData)
+        };
+      })
+    );
+
+    const batchItems: Array<Omit<QueueItem, 'id' | 'status' | 'addedAt'>> = [];
     let skippedBlockedCount = 0;
+    const normalizedScheduledAt = scheduledAt ? new Date(scheduledAt).toISOString() : undefined;
 
     for (let i = 0; i < recipients.length; i++) {
       const recipient = recipients[i];
@@ -10097,14 +10364,13 @@ function getFirestoreStatusPayload() {
 
       if (isJidBlocked(targetJid)) {
         skippedBlockedCount++;
-        addLog(req.username, `🚫 Skipped ${targetJid}: Recipient/Group is in global banned/blocked list.`, 'info');
         continue;
       }
 
       // First send all sequence messages to this recipient before proceeding to the next recipient
-      for (let s = 0; s < sequenceItems.length; s++) {
-        const seqItem = sequenceItems[s];
-        const item = pushToUserQueue(req.username, {
+      for (let s = 0; s < resolvedSequenceItems.length; s++) {
+        const seqItem = resolvedSequenceItems[s];
+        batchItems.push({
           recipient: targetJid,
           recipientType,
           messageType: seqItem.msgType || msgType || 'text',
@@ -10112,7 +10378,8 @@ function getFirestoreStatusPayload() {
           footer: seqItem.footer || footer,
           attachmentType: seqItem.attachmentType || attachmentType,
           attachmentUrl: seqItem.attachmentUrl || attachmentUrl,
-          attachmentData: seqItem.attachmentData || attachmentData,
+          attachmentPath: seqItem.resolvedAttachmentPath,
+          attachmentData: seqItem.resolvedAttachmentData,
           attachmentName: seqItem.attachmentName || attachmentName,
           inlineAttachment: seqItem.inlineAttachment ?? inlineAttachment,
           buttons: seqItem.buttons || buttons,
@@ -10123,17 +10390,29 @@ function getFirestoreStatusPayload() {
           tagGroupMembers: !!tagGroupMembers,
           customDelaySeconds: typeof seqItem.customDelaySeconds === 'number' ? seqItem.customDelaySeconds : interMessageDelaySeconds,
           sequenceIndex: s,
-          scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined
+          scheduledAt: normalizedScheduledAt
         });
-        addedItems.push(item);
       }
     }
 
+    if (skippedBlockedCount > 0) {
+      addLog(req.username, `🚫 Skipped ${skippedBlockedCount} recipient(s) in global banned/blocked list.`, 'info');
+    }
+
+    const addedItems = pushBatchToUserQueue(
+      req.username,
+      batchItems,
+      `Queue: Batch enqueued ${batchItems.length} message(s) for ${recipients.length - skippedBlockedCount} recipient(s) across ${validSessions.length} session(s).`
+    );
+
+    // Strip any fallback raw attachmentData from response payload
+    const lightweightItems = addedItems.map(({ attachmentData: _raw, ...rest }) => rest);
+
     res.json({
       success: true,
-      message: `Enqueued ${recipients.length} message(s) across ${validSessions.length} selected session(s).`,
-      queuedCount: recipients.length,
-      items: addedItems
+      message: `Enqueued ${batchItems.length} message(s) across ${validSessions.length} selected session(s).`,
+      queuedCount: batchItems.length,
+      items: lightweightItems
     });
   });
 
