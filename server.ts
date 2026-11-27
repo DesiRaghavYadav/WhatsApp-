@@ -108,6 +108,7 @@ const authBundleTimers = new Map<string, NodeJS.Timeout>();
 const pendingAuthBundleSyncs = new Set<string>();
 const activeAuthBundleSyncs = new Set<string>();
 const rerunAuthBundleSyncs = new Set<string>();
+const sentStartupNotifications = new Set<string>();
 
 // Debounced Firestore file backup queue (prevents burst writes & oversized docs from exhausting RAM/CPU)
 const fileSyncTimers = new Map<string, NodeJS.Timeout>();
@@ -5899,9 +5900,11 @@ async function connectToWhatsApp(username: string, id: string, name?: string) {
           }
         }, 5000);
 
-        // Send automatic startup "Bot is Live" notification to own WhatsApp number
+        // Send automatic startup "Bot is Live" notification to own WhatsApp number (once per connection instance)
         const rawSelfJid = sockInstance.user?.id;
-        if (rawSelfJid) {
+        const startupFlagKey = `${username}:${id}:startup_sent`;
+        if (rawSelfJid && !sentStartupNotifications.has(startupFlagKey)) {
+          sentStartupNotifications.add(startupFlagKey);
           const selfNum = rawSelfJid.split(':')[0].split('@')[0];
           const selfJid = `${selfNum}@s.whatsapp.net`;
           const liveMsg = `🎉 *Congratulations! Message Bot is Live!* 🤖✨\n\n` +

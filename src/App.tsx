@@ -6238,32 +6238,32 @@ export default function App() {
 
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-1">Batch Size (Groups/Batch)</label>
+                          <label className="text-[10px] text-slate-400 block mb-1">Batch Size (1 - 5 groups)</label>
                           <input
                             type="number"
                             min={1}
-                            max={50}
+                            max={5}
                             value={shareBatchSize}
-                            onChange={(e) => setShareBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                            onChange={(e) => setShareBatchSize(Math.min(5, Math.max(1, parseInt(e.target.value) || 1)))}
                             className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors font-mono"
                           />
                         </div>
 
                         <div>
-                          <label className="text-[10px] text-slate-400 block mb-1">Pause After Batch (Seconds)</label>
+                          <label className="text-[10px] text-slate-400 block mb-1">Pause After Batch (10s - 120s)</label>
                           <input
                             type="number"
-                            min={0}
-                            max={600}
+                            min={10}
+                            max={120}
                             value={shareBatchPauseSeconds}
-                            onChange={(e) => setShareBatchPauseSeconds(Math.max(0, parseInt(e.target.value) || 0))}
+                            onChange={(e) => setShareBatchPauseSeconds(Math.min(120, Math.max(10, parseInt(e.target.value) || 10)))}
                             className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500 transition-colors font-mono"
                           />
                         </div>
                       </div>
 
                       <p className="text-[10px] text-slate-500 leading-relaxed">
-                        When using <code className="text-emerald-400 font-mono">.sharenow</code> or forwarding shares, the bot sends to <strong>{shareBatchSize}</strong> groups, pauses for <strong>{shareBatchPauseSeconds}s</strong>, and continues safely.
+                        Configured for high safety: bot sends to <strong>{shareBatchSize}</strong> groups (range 1-5), pauses for <strong>{shareBatchPauseSeconds} seconds</strong> (range 10s to 2m), and continues.
                       </p>
                     </div>
 
